@@ -1,0 +1,16 @@
+[package]
+name = "riemannrho"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust library for approximating nontrivial zeros of the Riemann zeta function using the Riemann-Siegel formula."
+authors = ["Iman Akbari <iman.akbari@imnetsecurity.com>"]
+license = "MIT"
+repository = "https://github.com/imnetsecurity/riemannrho"
+keywords = ["riemann-zeta", "number-theory", "zeros", "mathematics"]
+categories = ["science", "mathematics"]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# No dependencies required; fully self-contained
