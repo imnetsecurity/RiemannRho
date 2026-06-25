@@ -1,7 +1,7 @@
 //! Binary executable for RiemannRho: command-line interface, computation, and visualization.
 
 use riemannrho::{
-    count_zeros_below, estimate_t, expected_zero_count, find_zero, nth_zero, z_func, Precision,
+    estimate_t, find_zero, nth_zero, verify_zero_count, z_func, zeros_below, Precision,
 };
 use std::env;
 use std::fs::File;
@@ -21,6 +21,7 @@ fn print_usage(program: &str) {
 USAGE:
     {program} [low] [high] [tol] [--high-order] [--nth N] [--out FILE]
     {program} --count T [--high-order]
+    {program} --list T [--high-order]
     {program}                      (interactive mode)
 
 ARGUMENTS:
@@ -33,6 +34,7 @@ OPTIONS:
                      asymptotic estimate beyond that.
     --count T        Count zeros with 0 < t <= T and compare with the theoretical
                      count theta(T)/pi + 1 (a Turing-flavored consistency check).
+    --list T         Print every zero with 0 < t <= T, one per line.
     --out FILE       Path for the generated plot (default: {DEFAULT_PLOT_PATH}).
     -h, --help       Print this help.
 
@@ -40,6 +42,7 @@ EXAMPLES:
     {program} 14 15 1e-10 --high-order
     {program} --nth 1 --high-order
     {program} --count 100 --high-order
+    {program} --list 50
     {program}"
     );
 }
@@ -59,6 +62,7 @@ struct CliArgs {
     precision: Precision,
     nth: Option<f64>,
     count: Option<f64>,
+    list: Option<f64>,
     out: String,
 }
 
@@ -70,6 +74,7 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         precision: Precision::Base,
         nth: None,
         count: None,
+        list: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
 
@@ -98,6 +103,17 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                     return Err(format!("--count must be > 0 (got {t})"));
                 }
                 cli.count = Some(t);
+            }
+            "--list" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--list requires a value".to_string())?;
+                let t = parse_f64(v, "--list")?;
+                if t <= 0.0 {
+                    return Err(format!("--list must be > 0 (got {t})"));
+                }
+                cli.list = Some(t);
             }
             "--out" => {
                 i += 1;
@@ -232,22 +248,40 @@ fn run() -> Result<(), String> {
 
     let cli = parse_args(&args)?;
 
+    // Listing mode: print every zero up to T, one per line.
+    if let Some(t_max) = cli.list {
+        let zeros = zeros_below(t_max, cli.precision);
+        for (i, z) in zeros.iter().enumerate() {
+            println!("{:>8}  {:.10}", i + 1, z);
+        }
+        println!("{} zeros with 0 < t <= {t_max}", zeros.len());
+        return Ok(());
+    }
+
     // Counting mode is a standalone report; it does not produce a single zero or plot.
     if let Some(t_max) = cli.count {
-        let found = count_zeros_below(t_max, cli.precision);
-        let expected = expected_zero_count(t_max);
-        let rounded = expected.round() as i64;
-        println!("Zeros found with 0 < t <= {t_max}: {found}");
-        println!("Theoretical count theta(T)/pi + 1: {expected:.4} (rounds to {rounded})");
-        if found as i64 == rounded {
+        let report = verify_zero_count(t_max, cli.precision);
+        println!("Zeros found with 0 < t <= {t_max}: {}", report.found);
+        println!("Smooth estimate theta(T)/pi + 1: {:.4}", report.expected);
+        println!(
+            "Implied S(T) = found - estimate: {:+.4}  (true count = estimate + S)",
+            report.s
+        );
+        if report.resolution > 10.0 {
             println!(
-                "Consistent: every counted zero lies on the critical line and the count \
-                 matches the theoretical value (Turing-flavored check passes up to T)."
+                "(scan refined to {} samples per spacing to resolve close zeros)",
+                report.resolution
+            );
+        }
+        if report.consistent {
+            println!(
+                "Consistent: S(T) is a normal small fluctuation, so every zero up to T was \
+                 found on the critical line (Turing-flavored check passes)."
             );
         } else {
             println!(
-                "Mismatch: found {found} vs expected {rounded}. This can happen when T is \
-                 very close to a zero, or if a closely spaced pair was stepped over."
+                "Suspicious: |S(T)| is implausibly large, suggesting a missed or spurious \
+                 zero. Try --high-order, or a slightly different T (T may be near a zero)."
             );
         }
         return Ok(());

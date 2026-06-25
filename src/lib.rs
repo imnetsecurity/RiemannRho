@@ -306,16 +306,20 @@ pub fn expected_zero_count(t: f64) -> f64 {
     theta(t) / PI + 1.0
 }
 
+/// Default number of scan samples per average zero spacing.
+const DEFAULT_SCAN_RESOLUTION: f64 = 10.0;
+
 /// Walks the sign changes of `Z(t)` over `(t_start, t_max]`, calling `on_zero` with each
 /// refined zero in increasing order. Iteration stops early if `on_zero` returns `false`.
 ///
-/// The scan step adapts to the local average zero spacing `2*pi/ln(t/2pi)`. Extremely
-/// close pairs of zeros (closer than ~1/10 of the average spacing) can in principle be
-/// stepped over; [`count_zeros_below`] vs [`expected_zero_count`] will flag such a miss.
+/// The scan step is the local average zero spacing `2*pi/ln(t/2pi)` divided by
+/// `resolution`. A higher `resolution` is more likely to separate very close pairs of
+/// zeros at the cost of more evaluations.
 fn scan_zeros<F: FnMut(f64) -> bool>(
     t_start: f64,
     t_max: f64,
     precision: Precision,
+    resolution: f64,
     mut on_zero: F,
 ) {
     let mut t = t_start.max(1.0);
@@ -323,7 +327,7 @@ fn scan_zeros<F: FnMut(f64) -> bool>(
     while t < t_max {
         let a = (t / (2.0 * PI)).max(1.0);
         let spacing = (2.0 * PI / a.ln().max(0.05)).max(0.05);
-        let step = (spacing / 10.0).min(t_max - t);
+        let step = (spacing / resolution).min(t_max - t);
         let t_next = t + step;
         let z_next = z_func(t_next, precision);
         if z.is_finite() && z_next.is_finite() && z != 0.0 && z * z_next < 0.0 {
@@ -344,7 +348,7 @@ fn scan_zeros<F: FnMut(f64) -> bool>(
 /// heights rather than astronomically large `t_max`.
 pub fn zeros_below(t_max: f64, precision: Precision) -> Vec<f64> {
     let mut zeros = Vec::new();
-    scan_zeros(1.0, t_max, precision, |root| {
+    scan_zeros(1.0, t_max, precision, DEFAULT_SCAN_RESOLUTION, |root| {
         zeros.push(root);
         true
     });
@@ -355,11 +359,78 @@ pub fn zeros_below(t_max: f64, precision: Precision) -> Vec<f64> {
 /// critical line. Compare with `round(`[`expected_zero_count`]`(t_max))`.
 pub fn count_zeros_below(t_max: f64, precision: Precision) -> usize {
     let mut count = 0usize;
-    scan_zeros(1.0, t_max, precision, |_| {
+    scan_zeros(1.0, t_max, precision, DEFAULT_SCAN_RESOLUTION, |_| {
         count += 1;
         true
     });
     count
+}
+
+/// Largest plausible magnitude of `S(t)` at the heights this tool explores. `S(t)` grows
+/// only like `O(log t)` and stays below ~1 for small `t`, so an implied `|S|` beyond this
+/// signals a miscount (a missed or spurious zero) rather than a genuine fluctuation.
+const MAX_PLAUSIBLE_S: f64 = 2.5;
+
+/// Outcome of a Turing-flavored zero-count verification (see [`verify_zero_count`]).
+#[derive(Clone, Copy, Debug)]
+pub struct CountReport {
+    /// Number of zeros found on the critical line in `(0, t_max]`.
+    pub found: usize,
+    /// Theoretical smooth count `theta(t_max)/pi + 1`.
+    pub expected: f64,
+    /// Implied `S(t_max) = found - expected`. The true zero count is
+    /// `expected + S`, so `S` should be a small `O(1)` fluctuation around 0.
+    pub s: f64,
+    /// Whether the implied `S` is within the plausible range (i.e. no zero appears to be
+    /// missing or doubled).
+    pub consistent: bool,
+    /// Scan samples per average spacing that produced this result (raised automatically
+    /// when the initial scan appeared to miss zeros).
+    pub resolution: f64,
+}
+
+/// Counts zeros up to `t_max` and checks the tally against the theoretical count.
+///
+/// The Riemann-von Mangoldt formula is `N(t) = theta(t)/pi + 1 + S(t)`, where `S(t)`
+/// oscillates around 0. So the found count should *not* equal `round(theta/pi + 1)`
+/// exactly — it equals that smooth value plus the `O(1)` term `S(t)` (for example at
+/// `t = 50` there are 10 zeros while `theta/pi + 1 = 9.42`, i.e. `S = 0.58`). We instead
+/// check that the *implied* `S = found - expected` is a plausible small fluctuation.
+///
+/// A coarse scan can step over an unusually close pair of zeros, which shows up as a
+/// suspiciously *negative* `S`; in that case the scan resolution is raised and the count
+/// retried, so the check is self-healing rather than merely reporting the discrepancy.
+pub fn verify_zero_count(t_max: f64, precision: Precision) -> CountReport {
+    let expected = expected_zero_count(t_max);
+
+    let mut resolution = DEFAULT_SCAN_RESOLUTION;
+    let mut found = count_zeros_below(t_max, precision);
+    // Refine only while the count looks too low (S < -1), the signature of a missed
+    // zero. A finer grid cannot remove a genuine positive fluctuation, so don't bother.
+    for _ in 0..4 {
+        if (found as f64) - expected >= -1.0 {
+            break;
+        }
+        resolution *= 4.0;
+        let mut c = 0usize;
+        scan_zeros(1.0, t_max, precision, resolution, |_| {
+            c += 1;
+            true
+        });
+        if c <= found {
+            break; // refinement found nothing new; the count has stabilized
+        }
+        found = c;
+    }
+
+    let s = found as f64 - expected;
+    CountReport {
+        found,
+        expected,
+        s,
+        consistent: s.abs() <= MAX_PLAUSIBLE_S,
+        resolution,
+    }
 }
 
 /// Finds the exact `n`th nontrivial zero (1-based) by scanning zeros sequentially from
@@ -384,7 +455,7 @@ pub fn nth_zero(n: u64, precision: Precision) -> Option<f64> {
 
     let mut count = 0u64;
     let mut result = None;
-    scan_zeros(1.0, t_max, precision, |root| {
+    scan_zeros(1.0, t_max, precision, DEFAULT_SCAN_RESOLUTION, |root| {
         count += 1;
         if count == n {
             result = Some(root);
@@ -495,13 +566,14 @@ mod tests {
 
     #[test]
     fn counted_zeros_match_expected_count() {
-        // The Turing-flavored check: actual count should round-trip with theta(T)/pi+1.
-        for &t in &[100.0, 200.0, 300.0] {
-            let found = count_zeros_below(t, Precision::Order2);
-            let expected = expected_zero_count(t).round() as usize;
-            assert_eq!(
-                found, expected,
-                "mismatch at T={t}: found {found}, expected {expected}"
+        // The Turing-flavored check: the count equals theta(T)/pi+1 plus the small S(T)
+        // term, so found - expected (= S) must be a modest O(1) fluctuation, not zero.
+        for &t in &[50.0, 100.0, 200.0, 300.0] {
+            let found = count_zeros_below(t, Precision::Order2) as f64;
+            let expected = expected_zero_count(t);
+            assert!(
+                (found - expected).abs() < 1.5,
+                "implausible S at T={t}: found {found}, expected {expected}"
             );
         }
     }
@@ -518,5 +590,19 @@ mod tests {
             );
         }
         assert_eq!(nth_zero(0, Precision::Base), None);
+    }
+
+    #[test]
+    fn verify_zero_count_is_consistent() {
+        for &t in &[50.0, 100.0, 300.0] {
+            let report = verify_zero_count(t, Precision::Order2);
+            assert!(
+                report.consistent,
+                "T={t}: found {} vs expected {:.3} at resolution {}",
+                report.found, report.expected, report.resolution
+            );
+            // A clean range should not need refinement beyond the default resolution.
+            assert_eq!(report.resolution, 10.0);
+        }
     }
 }

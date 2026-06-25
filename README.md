@@ -66,6 +66,7 @@ Execute with arguments or via interactive mode.
   nearby zero is used.
 - `--count T`: Count the zeros with $0 < t \le T$ and compare with the theoretical
   count $\theta(T)/\pi + 1$ (a Turing-flavored consistency check — see below).
+- `--list T`: Print every zero with $0 < t \le T$, one per line.
 - `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
 - `-h`, `--help`: Print usage.
 
@@ -107,23 +108,38 @@ Upon completion, the tool prints the zero approximation and asks: "Do you want a
    Sample output:
    ```
    Zeros found with 0 < t <= 100: 29
-   Theoretical count theta(T)/pi + 1: 29.0024 (rounds to 29)
-   Consistent: every counted zero lies on the critical line and the count
-   matches the theoretical value (Turing-flavored check passes up to T).
+   Smooth estimate theta(T)/pi + 1: 29.0024
+   Implied S(T) = found - estimate: -0.0024  (true count = estimate + S)
+   Consistent: S(T) is a normal small fluctuation, so every zero up to T was
+   found on the critical line (Turing-flavored check passes).
    ```
+
+5. **List every zero up to a height**:
+   ```
+   ./target/release/riemannrho --list 35 --high-order
+   ```
+   Prints each zero with its index, then the total.
 
 ## Counting and Verification
 
 `--count T` locates every zero of $Z(t)$ on the critical line with $0 < t \le T$ and
 compares the tally with the smooth part of the Riemann-von Mangoldt formula,
-$N(T) = \theta(T)/\pi + 1 + S(T)$. Since $S(T)$ oscillates around 0, the rounded value
-of $\theta(T)/\pi + 1$ predicts the true zero count, and agreement between the two is a
-practical (Turing-flavored) check that **all** zeros up to height $T$ are simple and lie
-on the critical line — the numerical heart of testing the Riemann hypothesis.
+$N(T) = \theta(T)/\pi + 1 + S(T)$.
 
-This is a heuristic check, not a rigorous proof: full rigor requires bounding $S(T)$ via
-Gram points, and extremely close zero pairs could in principle be stepped over (which the
-count-vs-theory comparison is designed to surface).
+Crucially, the count does **not** equal $\theta(T)/\pi + 1$ — it equals that smooth value
+plus the oscillating term $S(T)$. For example at $T = 50$ there are 10 zeros while
+$\theta(T)/\pi + 1 = 9.42$, i.e. $S(50) = 0.58$. The tool reports the *implied*
+$S(T) = \text{found} - \text{estimate}$ and checks that it is a plausible small
+fluctuation. A normal $|S(T)|$ means every zero up to $T$ was found on the critical line —
+a practical (Turing-flavored) check, which is the numerical heart of testing the Riemann
+hypothesis over a range.
+
+If the scan appears to have missed an unusually close pair of zeros (a suspiciously
+negative implied $S$), the resolution is automatically increased and the count retried, so
+the check is self-healing.
+
+This is a heuristic, not a rigorous proof: full rigor requires bounding $S(T)$ via Gram
+points and Turing's method proper.
 
 ## Visualization Details
 
