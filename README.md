@@ -67,6 +67,7 @@ Execute with arguments or via interactive mode.
 - `--count T`: Count the zeros with $0 < t \le T$ and compare with the theoretical
   count $\theta(T)/\pi + 1$ (a Turing-flavored consistency check — see below).
 - `--list T`: Print every zero with $0 < t \le T$, one per line.
+- `--gram N`: Print the first $N$ Gram points and check Gram's law at each.
 - `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
 - `-h`, `--help`: Print usage.
 
@@ -119,6 +120,21 @@ Upon completion, the tool prints the zero approximation and asks: "Do you want a
    ./target/release/riemannrho --list 35 --high-order
    ```
    Prints each zero with its index, then the total.
+
+6. **Gram points and Gram's law**:
+   ```
+   ./target/release/riemannrho --gram 10 --high-order
+   ```
+   Prints the first 10 Gram points $g_n$ and confirms $(-1)^n Z(g_n) > 0$ at each.
+
+## Gram Points
+
+A Gram point $g_n$ solves $\theta(g_n) = n\pi$. By *Gram's law*, $(-1)^n Z(g_n)$ is
+usually positive and each interval $[g_{n-1}, g_n)$ usually contains exactly one zero —
+the classical foundation for isolating zeros and, via Turing's method, for verifying zero
+counts rigorously. RiemannRho computes $g_n$ by Newton's method on $\theta$ and exposes
+them through `--gram`. (Gram's law has known exceptions at larger heights, governed by
+Rosser's rule, which this tool does not special-case.)
 
 ## Counting and Verification
 

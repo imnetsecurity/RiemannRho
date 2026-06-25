@@ -306,6 +306,51 @@ pub fn expected_zero_count(t: f64) -> f64 {
     theta(t) / PI + 1.0
 }
 
+/// The `n`th Gram point: the solution of `theta(g) = n * pi`.
+///
+/// Gram points are defined and strictly increasing for `n >= -1` (where `theta` is past
+/// its minimum at `t = 2*pi` and monotonically increasing). They underpin the classical
+/// method for isolating zeros: by *Gram's law* the sign of `(-1)^n Z(g_n)` is usually
+/// positive, and each Gram interval `[g_{n-1}, g_n)` usually contains exactly one zero —
+/// which is the basis of Turing's method for verifying zero counts.
+///
+/// # Returns
+/// `g_n`, or `NaN` for `n < -1`.
+pub fn gram_point(n: i64) -> f64 {
+    if n < -1 {
+        return f64::NAN;
+    }
+    let target = n as f64 * PI;
+    // N(g_n) = theta(g_n)/pi + 1 + S = n + 1 + S, so the height where N = n+1 is an
+    // excellent starting guess; fall back to just above the theta minimum for n = -1.
+    let mut t = if n >= 0 {
+        let est = estimate_t((n + 1) as f64);
+        if est.is_finite() {
+            est
+        } else {
+            10.0
+        }
+    } else {
+        9.6
+    };
+    for _ in 0..60 {
+        let d_theta = 0.5 * (t / (2.0 * PI)).ln(); // theta'(t)
+        if d_theta.abs() < 1e-12 {
+            break;
+        }
+        let step = (theta(t) - target) / d_theta;
+        t -= step;
+        // Stay in the monotonically increasing region t > 2*pi.
+        if t <= 2.0 * PI {
+            t = 2.0 * PI + 0.1;
+        }
+        if step.abs() < 1e-10 {
+            break;
+        }
+    }
+    t
+}
+
 /// Default number of scan samples per average zero spacing.
 const DEFAULT_SCAN_RESOLUTION: f64 = 10.0;
 
@@ -342,28 +387,71 @@ fn scan_zeros<F: FnMut(f64) -> bool>(
     }
 }
 
+/// Collects every zero of `Z(t)` in `(start, end]`, in increasing order, spreading the
+/// scan across worker threads for large ranges.
+///
+/// The range is tiled into contiguous chunks `(a_i, b_i]` with `a_{i+1} = b_i`, so the
+/// per-chunk results partition the zeros with no overlap. Small ranges (or single-core
+/// systems) fall back to a serial scan to avoid thread overhead.
+fn collect_zeros(start: f64, end: f64, precision: Precision, resolution: f64) -> Vec<f64> {
+    let span = end - start;
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(8);
+
+    if threads <= 1 || span < 200.0 {
+        let mut zeros = Vec::new();
+        scan_zeros(start, end, precision, resolution, |root| {
+            zeros.push(root);
+            true
+        });
+        return zeros;
+    }
+
+    let chunk = span / threads as f64;
+    let handles: Vec<_> = (0..threads)
+        .map(|i| {
+            let a = start + i as f64 * chunk;
+            let b = if i == threads - 1 {
+                end
+            } else {
+                start + (i + 1) as f64 * chunk
+            };
+            std::thread::spawn(move || {
+                let mut zeros = Vec::new();
+                scan_zeros(a, b, precision, resolution, |root| {
+                    zeros.push(root);
+                    true
+                });
+                zeros
+            })
+        })
+        .collect();
+
+    let mut all = Vec::new();
+    for handle in handles {
+        if let Ok(part) = handle.join() {
+            all.extend(part);
+        }
+    }
+    all.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    all
+}
+
 /// Locates every zero of `Z(t)` with imaginary part in `(0, t_max]`, in increasing order.
 ///
-/// Cost is `O(t_max * sqrt(t_max))`, so this is intended for exploration over moderate
-/// heights rather than astronomically large `t_max`.
+/// Cost is `O(t_max * sqrt(t_max))`; the scan is parallelized across CPU cores for large
+/// `t_max`, but this is still intended for exploration over moderate heights rather than
+/// astronomically large `t_max`.
 pub fn zeros_below(t_max: f64, precision: Precision) -> Vec<f64> {
-    let mut zeros = Vec::new();
-    scan_zeros(1.0, t_max, precision, DEFAULT_SCAN_RESOLUTION, |root| {
-        zeros.push(root);
-        true
-    });
-    zeros
+    collect_zeros(1.0, t_max, precision, DEFAULT_SCAN_RESOLUTION)
 }
 
 /// Counts the nontrivial zeros with imaginary part in `(0, t_max]` found on the
 /// critical line. Compare with `round(`[`expected_zero_count`]`(t_max))`.
 pub fn count_zeros_below(t_max: f64, precision: Precision) -> usize {
-    let mut count = 0usize;
-    scan_zeros(1.0, t_max, precision, DEFAULT_SCAN_RESOLUTION, |_| {
-        count += 1;
-        true
-    });
-    count
+    collect_zeros(1.0, t_max, precision, DEFAULT_SCAN_RESOLUTION).len()
 }
 
 /// Largest plausible magnitude of `S(t)` at the heights this tool explores. `S(t)` grows
@@ -412,11 +500,7 @@ pub fn verify_zero_count(t_max: f64, precision: Precision) -> CountReport {
             break;
         }
         resolution *= 4.0;
-        let mut c = 0usize;
-        scan_zeros(1.0, t_max, precision, resolution, |_| {
-            c += 1;
-            true
-        });
+        let c = collect_zeros(1.0, t_max, precision, resolution).len();
         if c <= found {
             break; // refinement found nothing new; the count has stabilized
         }
@@ -603,6 +687,52 @@ mod tests {
             );
             // A clean range should not need refinement beyond the default resolution.
             assert_eq!(report.resolution, 10.0);
+        }
+    }
+
+    #[test]
+    fn parallel_scan_is_ordered_and_complete() {
+        // Exercises the multi-threaded path (span > 200) and the ordered partition.
+        let zeros = zeros_below(400.0, Precision::Order2);
+        for w in zeros.windows(2) {
+            assert!(w[0] < w[1], "zeros not strictly increasing: {w:?}");
+        }
+        // Implied S must be a small fluctuation, i.e. nothing dropped or duplicated.
+        let s = zeros.len() as f64 - expected_zero_count(400.0);
+        assert!(s.abs() < 1.5, "implausible S over parallel range: {s}");
+    }
+
+    #[test]
+    fn gram_points_match_known_values() {
+        // Known Gram points g_0..g_5 (Haselgrove / standard tables).
+        let known = [
+            (0i64, 17.8455995405),
+            (1, 23.1702827012),
+            (2, 27.6701822178),
+            (3, 31.7179799547),
+            (4, 35.4671842971),
+            (5, 38.9992099640),
+        ];
+        for (n, want) in known {
+            let got = gram_point(n);
+            assert!(
+                (got - want).abs() < 1e-4,
+                "g_{n}: got {got}, expected ~{want}"
+            );
+        }
+        assert!(gram_point(-2).is_nan());
+    }
+
+    #[test]
+    fn grams_law_mostly_holds() {
+        // For low n, (-1)^n Z(g_n) > 0 (Gram's law) and each interval holds one zero.
+        for n in 0..=20i64 {
+            let g = gram_point(n);
+            let sign = if n % 2 == 0 { 1.0 } else { -1.0 };
+            assert!(
+                sign * z_func(g, Precision::Order2) > 0.0,
+                "Gram's law violated at n={n}"
+            );
         }
     }
 }

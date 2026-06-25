@@ -1,7 +1,7 @@
 //! Binary executable for RiemannRho: command-line interface, computation, and visualization.
 
 use riemannrho::{
-    estimate_t, find_zero, nth_zero, verify_zero_count, z_func, zeros_below, Precision,
+    estimate_t, find_zero, gram_point, nth_zero, verify_zero_count, z_func, zeros_below, Precision,
 };
 use std::env;
 use std::fs::File;
@@ -22,6 +22,7 @@ USAGE:
     {program} [low] [high] [tol] [--high-order] [--nth N] [--out FILE]
     {program} --count T [--high-order]
     {program} --list T [--high-order]
+    {program} --gram N [--high-order]
     {program}                      (interactive mode)
 
 ARGUMENTS:
@@ -35,6 +36,7 @@ OPTIONS:
     --count T        Count zeros with 0 < t <= T and compare with the theoretical
                      count theta(T)/pi + 1 (a Turing-flavored consistency check).
     --list T         Print every zero with 0 < t <= T, one per line.
+    --gram N         Print the first N Gram points and check Gram's law at each.
     --out FILE       Path for the generated plot (default: {DEFAULT_PLOT_PATH}).
     -h, --help       Print this help.
 
@@ -43,6 +45,7 @@ EXAMPLES:
     {program} --nth 1 --high-order
     {program} --count 100 --high-order
     {program} --list 50
+    {program} --gram 10 --high-order
     {program}"
     );
 }
@@ -63,6 +66,7 @@ struct CliArgs {
     nth: Option<f64>,
     count: Option<f64>,
     list: Option<f64>,
+    gram: Option<u64>,
     out: String,
 }
 
@@ -75,6 +79,7 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         nth: None,
         count: None,
         list: None,
+        gram: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
 
@@ -114,6 +119,17 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                     return Err(format!("--list must be > 0 (got {t})"));
                 }
                 cli.list = Some(t);
+            }
+            "--gram" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--gram requires a value".to_string())?;
+                let n: u64 = v
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("invalid value for --gram: {v:?}"))?;
+                cli.gram = Some(n);
             }
             "--out" => {
                 i += 1;
@@ -247,6 +263,22 @@ fn run() -> Result<(), String> {
     }
 
     let cli = parse_args(&args)?;
+
+    // Gram-point mode: list the first N Gram points and illustrate Gram's law.
+    if let Some(n) = cli.gram {
+        println!(
+            "{:>6}  {:>14}  {:>14}  Gram's law",
+            "n", "g_n", "(-1)^n Z(g_n)"
+        );
+        for k in 0..n as i64 {
+            let g = gram_point(k);
+            let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
+            let val = sign * z_func(g, cli.precision);
+            let ok = if val > 0.0 { "holds" } else { "VIOLATED" };
+            println!("{k:>6}  {g:>14.6}  {val:>14.6}  {ok}");
+        }
+        return Ok(());
+    }
 
     // Listing mode: print every zero up to T, one per line.
     if let Some(t_max) = cli.list {
