@@ -63,6 +63,88 @@ fn psi(p: &DBig, pi: &DBig, prec: usize) -> DBig {
     (&two_pi * &inner).cos() / (&two_pi * p).cos()
 }
 
+/// Precomputed per-term constants for the main sum: `ln(k)` and `1/sqrt(k)` for
+/// `k = 1..=nu_max`, indexed by `k - 1`.
+///
+/// These depend only on `k` (not `t`), so a single table is reused across every
+/// evaluation of a [`find_zero`] bisection — turning the dominant `ln`/`exp` cost from
+/// per-iteration into one-time. `1/sqrt(k)` is derived as `exp(-ln(k)/2)`, reusing the
+/// logarithm rather than paying a second one inside `powf`.
+struct SumTables {
+    ln_k: Vec<DBig>,
+    inv_sqrt_k: Vec<DBig>,
+}
+
+impl SumTables {
+    fn build(nu_max: usize, prec: usize) -> Self {
+        let neg_half = int(-1, prec) / int(2, prec);
+        let mut ln_k = Vec::with_capacity(nu_max);
+        let mut inv_sqrt_k = Vec::with_capacity(nu_max);
+        for k in 1..=nu_max {
+            let l = int(k as i64, prec).ln();
+            let inv = (&l * &neg_half).exp();
+            ln_k.push(l);
+            inv_sqrt_k.push(inv);
+        }
+        SumTables { ln_k, inv_sqrt_k }
+    }
+}
+
+/// `2 * sum_{k=1}^{nu} cos(theta_t - t*ln(k)) / sqrt(k)`, the Riemann-Siegel main sum.
+///
+/// The per-term `cos` (with range reduction of an argument that grows like `t*ln t`) is
+/// the irreducible cost at large `t`; it is spread across worker threads. The `ln`/`sqrt`
+/// factors come from the precomputed `tables`, so the inner loop is one `cos` and a
+/// couple of big multiplies per term.
+fn main_sum(t: &DBig, theta_t: &DBig, nu: usize, prec: usize, tables: &SumTables) -> DBig {
+    let two = int(2, prec);
+    if nu == 0 {
+        return int(0, prec);
+    }
+
+    let term = |k: usize| -> DBig {
+        let arg = theta_t - t * &tables.ln_k[k - 1];
+        arg.cos() * &tables.inv_sqrt_k[k - 1]
+    };
+
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(8);
+    if threads <= 1 || nu < 64 {
+        let mut acc = int(0, prec);
+        for k in 1..=nu {
+            acc += term(k);
+        }
+        return acc * two;
+    }
+
+    let chunk = nu.div_ceil(threads);
+    let partials: Vec<DBig> = std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        let mut start = 1;
+        while start <= nu {
+            let end = (start + chunk - 1).min(nu);
+            let term = &term;
+            handles.push(s.spawn(move || {
+                let mut acc = int(0, prec);
+                for k in start..=end {
+                    acc += term(k);
+                }
+                acc
+            }));
+            start = end + 1;
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    let mut acc = int(0, prec);
+    for p in partials {
+        acc += p;
+    }
+    acc * two
+}
+
 /// Hardy's Z-function at `t`, evaluated with `prec` decimal digits of working precision.
 ///
 /// Mirrors [`crate::z_func`] term-for-term (main sum plus `C0`/`C1`/`C2`), but in
@@ -72,6 +154,22 @@ pub fn z_func(t: f64, prec: usize, precision: Precision) -> f64 {
         return f64::NAN;
     }
     let prec = prec.clamp(16, MAX_DIGITS);
+    let nu = nu_of(t, prec);
+    let tables = SumTables::build(nu, prec);
+    z_eval(t, prec, precision, &tables)
+}
+
+/// `nu = floor(sqrt(t / (2*pi)))`, the number of terms in the main sum.
+fn nu_of(t: f64, prec: usize) -> usize {
+    let a = from_f64(t, prec) / (int(2, prec) * pi(prec));
+    to_f64(&sqrt(&a, prec)).floor().max(0.0) as usize
+}
+
+/// Evaluates `Z(t)` using a prebuilt `tables` (which must cover `nu(t)`).
+fn z_eval(t: f64, prec: usize, precision: Precision, tables: &SumTables) -> f64 {
+    if !t.is_finite() || t <= 0.0 {
+        return f64::NAN;
+    }
     let t = from_f64(t, prec);
     let pi = pi(prec);
     let two_pi = int(2, prec) * &pi;
@@ -81,13 +179,7 @@ pub fn z_func(t: f64, prec: usize, precision: Precision) -> f64 {
     let p = &sqrt_a - int(nu, prec);
 
     let theta_t = theta(&t, prec);
-    let mut sum = int(0, prec);
-    for k in 1..=nu.max(0) {
-        let kd = int(k, prec);
-        let arg = &theta_t - &t * kd.clone().ln();
-        sum += arg.cos() / sqrt(&kd, prec);
-    }
-    sum *= int(2, prec);
+    let sum = main_sum(&t, &theta_t, nu.max(0) as usize, prec, tables);
 
     let sign = if nu % 2 == 0 {
         int(-1, prec)
@@ -140,10 +232,15 @@ pub fn find_zero(a: f64, b: f64, tol: f64, prec: usize, precision: Precision) ->
     if !a.is_finite() || !b.is_finite() || a >= b {
         return None;
     }
+    let prec = prec.clamp(16, MAX_DIGITS);
+    // nu is monotonic in t, so the table built for the upper bound covers every t in
+    // [a, b]; build it once and reuse it across all bisection iterations.
+    let tables = SumTables::build(nu_of(b, prec), prec);
+
     let mut lo = a;
     let mut hi = b;
-    let z_lo = z_func(lo, prec, precision);
-    let z_hi = z_func(hi, prec, precision);
+    let z_lo = z_eval(lo, prec, precision, &tables);
+    let z_hi = z_eval(hi, prec, precision, &tables);
     if !z_lo.is_finite() || !z_hi.is_finite() || z_lo * z_hi > 0.0 {
         return None;
     }
@@ -153,7 +250,7 @@ pub fn find_zero(a: f64, b: f64, tol: f64, prec: usize, precision: Precision) ->
         if (hi - lo) < tol {
             return Some(mid);
         }
-        let z_mid = z_func(mid, prec, precision);
+        let z_mid = z_eval(mid, prec, precision, &tables);
         if z_mid == 0.0 {
             return Some(mid);
         }
