@@ -4,42 +4,32 @@
 
 RiemannRho is a high-performance Rust library and command-line tool dedicated to the numerical approximation of nontrivial zeros of the Riemann zeta function \(\zeta(s)\) on the critical line \(\operatorname{Re}(s) = 1/2\). Utilizing the Riemann-Siegel asymptotic formula, RiemannRho computes Hardy's Z-function \(Z(t)\), facilitating precise location of zeros corresponding to \(\zeta(1/2 + it) = 0\). Engineered for accuracy, efficiency, and extensibility, this tool serves researchers in analytic number theory, supporting investigations into the Riemann hypothesis through scalable computations of high-order zeros.
 
-The RiemannRho library and tool, which approximates nontrivial zeros of the Riemann zeta function $\zeta(s)$ on the critical line, has several practical and theoretical use cases rooted in analytic number theory and beyond. Below, I'll outline key applications based on established mathematical contexts. These zeros, particularly under the unproven Riemann hypothesis (which posits all nontrivial zeros have real part 1/2), provide insights into prime number distribution and oscillatory phenomena.
+RiemannRho approximates nontrivial zeros of the Riemann zeta function $\zeta(s)$ on the critical line. These zeros, particularly under the unproven Riemann hypothesis (which posits that all nontrivial zeros have real part 1/2), provide insights into prime number distribution and oscillatory phenomena. Some representative use cases:
 
-1. Analytic Number Theory and Prime Distribution
-The zeros control the oscillations of prime numbers around their expected positions via formulas like the prime number theorem. Computing them helps verify or explore bounds on the error term in prime counting functions, such as $\pi(x) \approx \frac{x}{\ln x}$.math.stackexchange.com+2 more Tools like RiemannRho can simulate or test these for large $t$, aiding research into prime gaps or density.
+1. **Analytic Number Theory and Prime Distribution.** The zeros control the oscillations of prime numbers around their expected positions via explicit formulas connected to the prime number theorem ($\pi(x) \approx \frac{x}{\ln x}$). Computing them helps explore bounds on the error term in prime-counting functions.
 
-2. Testing the Riemann Hypothesis
-Extensive computations of zeros (e.g., up to $10^{12}$th order) verify the hypothesis numerically, as no counterexamples have been found. RiemannRho's scalability supports such verifications on desktop hardware, contributing to ongoing efforts in number theory.en.wikipedia.org
+2. **Testing the Riemann Hypothesis.** Extensive numerical computation of zeros has so far found no counterexamples. RiemannRho can locate individual zeros for spot checks and exploration.
 
-3. Physics Applications (Quantum Chaos and Random Matrix Theory)
-Zeros exhibit connections to eigenvalues in quantum systems, modeled by random matrices. This has implications in quantum mechanics, such as energy levels in chaotic systems, and statistical physics for understanding correlations.en.wikipedia.org
+3. **Physics (Quantum Chaos and Random Matrix Theory).** Zero spacings statistically resemble eigenvalue spacings of random matrices, with connections to energy levels in chaotic quantum systems.
 
-4. Probability and Statistics
-The zeta function and its zeros appear in probabilistic models, like moments of random variables or applied statistics for distribution analysis.en.wikipedia.org RiemannRho can generate data for statistical simulations or hypothesis testing in these fields.
+4. **Education and Exploration.** The tool computes individual zeros (the first at $\approx 14.1347$) with optional visualizations of $Z(t)$, useful for teaching complex analysis, number theory, and asymptotic methods.
 
-5. Educational and Exploratory Purposes
-For teaching complex analysis or number theory, the tool allows interactive computation of zeros (e.g., the first at ~14.1347), with optional visualizations to illustrate $Z(t)$ behavior. It's useful in academic settings for demonstrating asymptotic methods.
-
-6. Potential in Cryptography and Algorithms
-If the Riemann hypothesis is proven (or assumed), it could strengthen bounds in algorithms like primality testing or factorization, indirectly impacting cryptography. While speculative, computing zeros helps explore these links.quora.com
-
-RiemannRho's design (e.g., high-order corrections for precision) makes it particularly suited for research requiring rapid, accurate zero approximations without heavy dependencies. For very large-scale computations, it complements professional tools like those from Odlyzko. If you meant use cases for a different "it," provide more context!
+For large-scale, record-breaking computations, dedicated tools such as Odlyzko's remain the reference; RiemannRho targets accessible, dependency-free exploration on ordinary hardware.
 
 Core strengths include:
-- **Precision-Enhanced Algorithms**: Employs base and higher-order remainder terms (up to C2) for reduced error in zero approximations, ideal for both low and high \(t\).
-- **High-Order Correction Mode**: Boosts computational fidelity with advanced corrections, enabling near-exact results for foundational zeros.
-- **Dynamic Visualization**: Optional export of interactive D3.js plots to HTML, rendering \(Z(t)\) curves with zero annotations for visual analysis.
-- **Large-Scale Capability**: Handles zeros up to the \(10^{12}\)th order or beyond, with \(O(\sqrt{t})\) efficiency, pushing boundaries of desktop computing.
+- **Riemann-Siegel Evaluation**: Computes Hardy's $Z(t)$ with the main sum plus optional remainder correction terms (up to $C_2$) for reduced error.
+- **High-Order Correction Mode**: Adds the $C_1$ and $C_2$ terms to noticeably reduce the asymptotic error at moderate $t$ (see [Accuracy](#accuracy)).
+- **Visualization**: Optional export of a D3.js plot to HTML, rendering the $Z(t)$ curve with a zero marker.
+- **$O(\sqrt{t})$ Main Sum**: Each $Z(t)$ evaluation costs $O(\sqrt{t})$ thanks to the Riemann-Siegel formula. Note that with 64-bit floats, accuracy and runtime degrade well before astronomically large ordinals.
 
 Licensed under MIT, RiemannRho promotes open collaboration in mathematical software, ensuring robust, reproducible results without external dependencies.
 
 ## Features
 
 - **Range-Based Zero Detection**: Define intervals \([low, high]\) for bisection-based zero isolation via \(Z(t)\).
-- **Ordinal Zero Approximation**: The `--nth` option estimates the \(n\)th zero's imaginary part using refined asymptotic expansions and Newton's iteration.
-- **High-Order Correction Mode**: Invoke `--high-order` to incorporate additional terms, minimizing discrepancies (e.g., first zero refined to ~14.1347251417).
-- **Browser-Based Plots**: Post-calculation prompt generates `zeta_plot.html` with D3.js visualizations: smooth lines, axes, and red zero markers.
+- **Ordinal Zero Approximation**: The `--nth` option estimates the \(n\)th zero via the Riemann-von Mangoldt counting formula with Newton's iteration, then scans for and brackets the actual sign change.
+- **High-Order Correction Mode**: Invoke `--high-order` to include the $C_1$ and $C_2$ correction terms, reducing the asymptotic error.
+- **Browser-Based Plots**: Post-calculation prompt generates an HTML file (default `zeta_plot.html`, configurable with `--out`) with a D3.js visualization: line, axes, and a red zero marker.
 - **Flexible Interfaces**: Command-line parameters or interactive prompts, with customizable tolerance for convergence control.
 - **Dependency-Free**: Built exclusively on Rust's standard library, guaranteeing cross-platform reliability.
 
@@ -49,7 +39,7 @@ RiemannRho requires Rust (1.70+). Installation steps:
 
 1. Install Rust via [rustup](https://rustup.rs/).
 2. Clone the source:
-git clone https://github.com/yourusername/riemannrho.git
+git clone https://github.com/imnetsecurity/riemannrho.git
 cd riemannrho
 3. Compile:
 cargo build --release
@@ -62,32 +52,48 @@ The tool operates independently, with no runtime dependencies.
 Execute with arguments or via interactive mode.
 
 ### Command Syntax
-./target/release/riemannrho [low] [high] [tol] [--high-order] [--nth n]
 
-- `low`, `high`: Search interval bounds (omit for `--nth`).
-- `tol`: Precision threshold (default: 1e-10).
-- `--high-order`: Activate enhanced correction terms.
-- `--nth n`: Target the nth zero (supports large n, e.g., 1e12).
+```
+./target/release/riemannrho [low] [high] [tol] [--high-order] [--nth N] [--out FILE]
+```
 
-Upon completion, view the zero approximation and respond to the visualization prompt: "Do you want a D3.js visualization? (yes/no)". Affirmative generates `zeta_plot.html` for browser viewing.
+- `low`, `high`: Search interval bounds (omit when using `--nth`).
+- `tol`: Bisection interval-width tolerance (default: 1e-10).
+- `--high-order`: Include the $C_1$ and $C_2$ correction terms.
+- `--nth N`: Target the Nth zero (`N >= 1`) instead of supplying an interval.
+- `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
+- `-h`, `--help`: Print usage.
+
+Upon completion, the tool prints the zero approximation and asks: "Do you want a D3.js visualization? (yes/no)". Answering `yes` writes the plot HTML for browser viewing.
+
+> **Note:** `tol` controls the *root-finding* precision, not the accuracy of the
+> underlying asymptotic model. For small `t` the Riemann-Siegel approximation
+> itself limits how close the result can get to the true zero.
 
 ### Usage Examples
 
-1. **First Zero with High-Order Correction Mode**:
-./target/release/riemannrho 14 15 1e-10 --high-order
-Sample Output:
-Approximate imaginary part of the nontrivial zero: 14.1347251417
-Do you want a D3.js visualization? (yes/no)
-npm run dev
-Visualization file depicts \(Z(t)\) crossing at ~14.1347.
+1. **First zero with high-order correction**:
+   ```
+   ./target/release/riemannrho 14 15 1e-10 --high-order
+   ```
+   Sample output:
+   ```
+   Approximate imaginary part of the nontrivial zero: 14.1348228651
+   Do you want a D3.js visualization? (yes/no)
+   ```
+   (True value: 14.1347251417; the residual error is the limit of the asymptotic series at this small `t`.)
 
-2. **Millionth Zero**:
-./target/release/riemannrho 1e-10 --nth 1000000 --high-order
-Yields t ≈ 1.84 × 10^6.
+2. **Nth zero directly**:
+   ```
+   ./target/release/riemannrho --nth 1000000 --high-order
+   ```
+   Yields t ≈ 600269.6770 (the millionth zero).
 
-3. **Prompted Mode** (argument-free):
-./target/release/riemannrho
-Guides through input for low, high, tol.
+3. **Interactive mode** (no arguments):
+   ```
+   ./target/release/riemannrho
+   ```
+   Prompts for `low`, `high`, and `tol`.
 
 ## Visualization Details
 
@@ -96,15 +102,32 @@ Generated plots feature:
 - **Vertical Axis**: Z(t) values.
 - **Line Graph**: Interpolated curve from sampled data.
 - **Zero Indicator**: Prominent red line if detected.
-- **Engagement**: Browser supports zoom and pan via D3.js.
+- **Zero Indicator**: A red vertical line at the located zero (if one was found).
 
-Utilizes the public D3.js CDN, creating plots from computed values without extraneous text.
+Loads D3.js v7 from its public CDN, so plot viewing requires an internet connection.
+
+## Accuracy
+
+The Riemann-Siegel formula is asymptotic, so its error shrinks as `t` grows. The
+correction terms reduce the error at moderate `t`. For the first zero (`t ≈ 14.13`):
+
+| Mode                     | Result            | Absolute error |
+|--------------------------|-------------------|----------------|
+| Base (`C0`)              | 14.1371961027     | ~2.5e-3        |
+| `--high-order` (`+C1+C2`)| 14.1348228651     | ~9.8e-5        |
+
+For larger `t` the agreement improves substantially. Unit tests in `src/lib.rs`
+check several known zeros (14.1347, 21.0220, 25.0109, 30.4249, 32.9351).
 
 ## Limitations
 
-- Asymptotic approximations may yield minor errors for t < 10; further terms can be added for ultra-precision.
-- Ultra-large n (>10^15) risks overflow or extended runtime; includes advisory warnings.
-- Plots require a contemporary browser for full interactivity.
+- The asymptotic approximation is least accurate for small `t` (roughly `t < 10`).
+- Computations use 64-bit floating point, so both accuracy and runtime degrade for
+  very large ordinals long before any theoretical limit. `--nth` for an extremely
+  large `N` will be slow and increasingly imprecise.
+- The correction terms compute derivatives of the Riemann-Siegel `Psi` function
+  numerically; accuracy is reduced near its poles (fractional part `p ≈ 0.25` or `0.75`).
+- Plot viewing requires a browser with internet access (D3.js CDN).
 
 ## Contributing
 

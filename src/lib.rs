@@ -1,12 +1,23 @@
 //! RiemannRho: Library for approximating nontrivial zeros of the Riemann zeta function.
 //!
 //! This module provides functions to compute Hardy's Z-function using the Riemann-Siegel formula,
-//! find zeros via bisection, and estimate the nth zero. It supports optional higher-order terms
-//! for precision (High-Order Correction Mode). No visualization or I/O is included here; that's for binaries.
+//! find zeros via bisection, and estimate the nth zero. It supports optional higher-order remainder
+//! terms for precision (High-Order Correction Mode). No visualization or I/O is included here;
+//! that belongs to the binaries.
 
 use std::f64::consts::PI;
 
+/// Maximum number of bisection iterations before [`find_zero`] gives up.
+///
+/// With `f64` the interval width can be halved at most ~60 times before reaching the
+/// limit of representable precision, so this also guards against an infinite loop when
+/// `tol` is set to 0 (or smaller than the floating-point resolution).
+const MAX_BISECTION_ITERS: u32 = 200;
+
 /// Computes the Riemann-Siegel theta function approximation.
+///
+/// The asymptotic expansion is accurate for large `t`; for small `t` (roughly `t < 10`)
+/// the error grows because the omitted terms are no longer negligible.
 ///
 /// # Arguments
 /// * `t` - The imaginary part (must be positive).
@@ -15,48 +26,90 @@ use std::f64::consts::PI;
 /// The approximated theta(t).
 pub fn theta(t: f64) -> f64 {
     let log_term = (t / 2.0) * (t / (2.0 * PI)).ln();
-    log_term - t / 2.0 - PI / 8.0 + 1.0 / (48.0 * t) + 7.0 / (5760.0 * t.powi(3)) - 31.0 / (80640.0 * t.powi(5))
+    log_term - t / 2.0 - PI / 8.0 + 1.0 / (48.0 * t) + 7.0 / (5760.0 * t.powi(3))
+        - 31.0 / (80640.0 * t.powi(5))
 }
 
-/// Numerical derivative helper for higher-order terms.
+/// Approximates the `n`th derivative of `f` at `x` using a central-difference stencil
+/// with one level of Richardson extrapolation.
 ///
-/// # Arguments
-/// * `f` - The function to differentiate.
-/// * `x` - Point of evaluation.
-/// * `n` - Order of derivative.
-/// * `h` - Step size for finite differences.
-///
-/// # Returns
-/// The nth derivative approximation.
-fn derivative<F: Fn(f64) -> f64 + Copy>(f: F, x: f64, n: u32, h: f64) -> f64 {
-    if n == 0 {
-        f(x)
-    } else {
-        (derivative(f, x + h, n - 1, h) - derivative(f, x - h, n - 1, h)) / (2.0 * h)
-    }
+/// The previous implementation used a recursive central difference with a fixed tiny
+/// step (`h = 1e-5`). For high orders that is catastrophically unstable: dividing by
+/// `(2h)^n` amplifies the ~1e-16 rounding noise of `f` by many orders of magnitude
+/// (for `n = 6` by roughly 1e13), so the result was pure noise. Here we use explicit
+/// stencils with a step appropriate to the order and Richardson-extrapolate `D(h)` and
+/// `D(h/2)` to cancel the leading `O(h^2)` truncation error.
+fn nth_derivative<F: Fn(f64) -> f64 + Copy>(f: F, x: f64, n: u32, h: f64) -> f64 {
+    let stencil = |h: f64| -> f64 {
+        match n {
+            0 => f(x),
+            2 => (f(x - h) - 2.0 * f(x) + f(x + h)) / (h * h),
+            3 => {
+                (-f(x - 2.0 * h) + 2.0 * f(x - h) - 2.0 * f(x + h) + f(x + 2.0 * h))
+                    / (2.0 * h.powi(3))
+            }
+            6 => {
+                (f(x - 3.0 * h) - 6.0 * f(x - 2.0 * h) + 15.0 * f(x - h) - 20.0 * f(x)
+                    + 15.0 * f(x + h)
+                    - 6.0 * f(x + 2.0 * h)
+                    + f(x + 3.0 * h))
+                    / h.powi(6)
+            }
+            // Fallback for any other order: recursive central difference.
+            _ => {
+                fn rec<G: Fn(f64) -> f64 + Copy>(g: G, x: f64, n: u32, h: f64) -> f64 {
+                    if n == 0 {
+                        g(x)
+                    } else {
+                        (rec(g, x + h, n - 1, h) - rec(g, x - h, n - 1, h)) / (2.0 * h)
+                    }
+                }
+                rec(f, x, n, h)
+            }
+        }
+    };
+
+    let d_h = stencil(h);
+    let d_h2 = stencil(h / 2.0);
+    // Richardson extrapolation for an O(h^2) central stencil: (4*D(h/2) - D(h)) / 3.
+    (4.0 * d_h2 - d_h) / 3.0
 }
 
-/// Computes Hardy's Z-function using Riemann-Siegel with optional higher terms.
+/// Computes Hardy's Z-function using the Riemann-Siegel formula with optional
+/// higher-order remainder terms.
+///
+/// The main sum runs over `floor(sqrt(t / 2pi))` terms, giving the `O(sqrt(t))`
+/// cost that makes large-`t` evaluation feasible. The remainder correction constants
+/// follow Edwards: `C1 = -psi'''/(96 pi^2)` and
+/// `C2 = psi''''''/(18432 pi^4) + psi''/(64 pi^2)`.
 ///
 /// # Arguments
-/// * `t` - Imaginary part.
-/// * `terms` - Number of remainder terms (0: basic, 1: +C1, 2: +C1+C2).
+/// * `t` - Imaginary part (must be > 0).
+/// * `terms` - Number of remainder correction terms (0: C0 only, 1: +C1, 2: +C1+C2).
 ///
 /// # Returns
-/// Z(t) value.
+/// Z(t) value. Returns `NaN` for non-positive or non-finite `t`.
 pub fn z_func(t: f64, terms: u32) -> f64 {
+    if !t.is_finite() || t <= 0.0 {
+        return f64::NAN;
+    }
+
     let sqrt_t_over_2pi = (t / (2.0 * PI)).sqrt();
     let nu = sqrt_t_over_2pi.floor() as i64;
     let p = sqrt_t_over_2pi - nu as f64;
 
+    // Main sum: 2 * sum_{k=1}^{nu} cos(theta(t) - t*ln(k)) / sqrt(k).
+    // theta(t) is constant across the sum, so it is computed once here rather than
+    // re-evaluated inside the loop.
+    let theta_t = theta(t);
     let mut sum = 0.0;
-    for k in 1..=(nu as usize) {
-        let sqrt_k = (k as f64).sqrt();
-        let arg = theta(t) - t * (k as f64).ln();
-        sum += arg.cos() / sqrt_k;
+    for k in 1..=nu.max(0) {
+        let kf = k as f64;
+        sum += (theta_t - t * kf.ln()).cos() / kf.sqrt();
     }
     sum *= 2.0;
 
+    // Remainder: (-1)^{nu-1} * a^{-1/4} * [C0 + C1*a^{-1/2} + C2*a^{-1} + ...].
     let sign = if nu % 2 == 0 { -1.0 } else { 1.0 };
     let a = t / (2.0 * PI);
     let scale = a.powf(-0.25);
@@ -67,72 +120,190 @@ pub fn z_func(t: f64, terms: u32) -> f64 {
     let mut r = sign * scale * c0;
 
     if terms >= 1 {
-        let psi3 = derivative(psi, p, 3, 1e-5);
+        let psi3 = nth_derivative(psi, p, 3, 0.05);
         let c1 = -1.0 / (96.0 * PI * PI) * psi3;
         r += sign * scale * c1 * a.powf(-0.5);
     }
 
     if terms >= 2 {
-        let psi2 = derivative(psi, p, 2, 1e-5);
-        let psi6 = derivative(psi, p, 6, 1e-5);
-        let c2 = 1.0 / (18432.0 * PI.powi(4) as f64) * psi6 + 1.0 / (64.0 * PI.powi(2) as f64) * psi2;
+        let psi2 = nth_derivative(psi, p, 2, 0.05);
+        let psi6 = nth_derivative(psi, p, 6, 0.05);
+        let c2 = 1.0 / (18432.0 * PI.powi(4)) * psi6 + 1.0 / (64.0 * PI.powi(2)) * psi2;
         r += sign * scale * c2 * a.powf(-1.0);
     }
 
     sum + r
 }
 
-/// Finds a zero of Z(t) in [a, b] using bisection.
+/// Finds a zero of Z(t) in `[a, b]` using bisection.
 ///
 /// # Arguments
 /// * `a` - Lower bound.
 /// * `b` - Upper bound.
-/// * `tol` - Tolerance.
+/// * `tol` - Tolerance on the interval width.
 /// * `terms` - Remainder terms count.
 ///
 /// # Returns
-/// Some(t) if zero found, None if no sign change.
-#[allow(unused_assignments)]
-pub fn find_zero(mut a: f64, mut b: f64, tol: f64, terms: u32) -> Option<f64> {
-    let mut za = z_func(a, terms);
-    let mut zb = z_func(b, terms);
-    if za * zb > 0.0 {
+/// `Some(t)` if a sign change is bracketed, `None` if the inputs are invalid or there
+/// is no sign change in the interval.
+pub fn find_zero(a: f64, b: f64, tol: f64, terms: u32) -> Option<f64> {
+    // Reject invalid input outright. Without this an NaN bound (e.g. from a bad nth
+    // estimate) made the old loop spin forever, because `(b - a) < tol` is never true
+    // when `b - a` is NaN.
+    if !a.is_finite() || !b.is_finite() || a >= b {
         return None;
     }
-    loop {
-        let mid = (a + b) / 2.0;
-        let zm = z_func(mid, terms);
-        if (b - a) < tol {
+
+    let mut lo = a;
+    let mut hi = b;
+    let mut z_lo = z_func(lo, terms);
+    let z_hi = z_func(hi, terms);
+    if !z_lo.is_finite() || !z_hi.is_finite() {
+        return None;
+    }
+    if z_lo * z_hi > 0.0 {
+        return None;
+    }
+
+    for _ in 0..MAX_BISECTION_ITERS {
+        let mid = lo + (hi - lo) / 2.0;
+        if (hi - lo) < tol {
             return Some(mid);
         }
-        if za * zm > 0.0 {
-            a = mid;
-            za = zm;
+        let z_mid = z_func(mid, terms);
+        if z_mid == 0.0 {
+            return Some(mid);
+        }
+        if z_lo * z_mid > 0.0 {
+            lo = mid;
+            z_lo = z_mid;
         } else {
-            b = mid;
-            zb = zm;
+            hi = mid;
         }
     }
+    Some(lo + (hi - lo) / 2.0)
 }
 
-/// Estimates the imaginary part of the nth zero.
+/// Estimates the imaginary part of the `n`th nontrivial zero.
+///
+/// Solves `N(t) = n` (where `N(t)` is the Riemann-von Mangoldt zero-counting estimate)
+/// with Newton's method. For very small `n` the asymptotic counting formula is poor, so
+/// the first handful of zeros are returned from a small table of known values to provide
+/// a robust bracket for [`find_zero`].
 ///
 /// # Arguments
-/// * `n` - Zero index (starting from 1).
+/// * `n` - Zero index (1-based).
 ///
 /// # Returns
-/// Approximated t_n.
+/// Approximated `t_n`, or `NaN` for `n < 1`.
 pub fn estimate_t(n: f64) -> f64 {
-    if n < 1.0 {
-        return 0.0;
+    if !n.is_finite() || n < 1.0 {
+        return f64::NAN;
     }
-    let mut t = 2.0 * PI * n * n.ln();
-    for _ in 0..20 {
+
+    // Known imaginary parts of the first few zeros. The asymptotic formula below is
+    // unreliable for small n (and would produce NaN for n = 1, where the old initial
+    // guess 2*pi*n*ln(n) collapsed to 0).
+    const KNOWN_ZEROS: [f64; 5] = [
+        14.134725141734693,
+        21.022039638771555,
+        25.01085758014569,
+        30.424876125859513,
+        32.93506158773919,
+    ];
+    let idx = n as usize;
+    if (n.fract() == 0.0) && idx >= 1 && idx <= KNOWN_ZEROS.len() {
+        return KNOWN_ZEROS[idx - 1];
+    }
+
+    // Initial guess from the asymptotic gram-point spacing, guarded so the argument of
+    // the logarithms stays comfortably positive even for small n.
+    let mut t = (2.0 * PI * n).max(2.0 * PI * n * n.ln()).max(10.0);
+    for _ in 0..50 {
         let a = t / (2.0 * PI);
         let log_a = a.ln();
-        let nt = a * log_a - a + 7.0 / 8.0;
-        let dnt = log_a;
-        t -= (nt - n) * (2.0 * PI / dnt);
+        // N(t) ~ a*ln(a) - a + 7/8, with dN/dt = ln(a) / (2*pi).
+        let n_t = a * log_a - a + 7.0 / 8.0;
+        let dn_dt = log_a / (2.0 * PI);
+        let step = (n_t - n) / dn_dt;
+        t -= step;
+        if step.abs() < 1e-9 {
+            break;
+        }
     }
     t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reference imaginary parts of the first nontrivial zeros (Odlyzko's tables).
+    const REFERENCE_ZEROS: [f64; 5] = [
+        14.134725141734693,
+        21.022039638771555,
+        25.01085758014569,
+        30.424876125859513,
+        32.93506158773919,
+    ];
+
+    #[test]
+    fn finds_first_zero_within_tolerance() {
+        let z = find_zero(14.0, 15.0, 1e-10, 2).expect("first zero should be bracketed");
+        assert!(
+            (z - REFERENCE_ZEROS[0]).abs() < 1e-3,
+            "got {z}, expected ~{}",
+            REFERENCE_ZEROS[0]
+        );
+    }
+
+    #[test]
+    fn high_order_is_at_least_as_accurate_as_base() {
+        let base = find_zero(14.0, 15.0, 1e-12, 0).unwrap();
+        let high = find_zero(14.0, 15.0, 1e-12, 2).unwrap();
+        let err_base = (base - REFERENCE_ZEROS[0]).abs();
+        let err_high = (high - REFERENCE_ZEROS[0]).abs();
+        assert!(
+            err_high <= err_base + 1e-9,
+            "high-order error {err_high} should not exceed base error {err_base}"
+        );
+    }
+
+    #[test]
+    fn brackets_several_known_zeros() {
+        // Search a window around each reference zero and confirm we recover it.
+        for &z0 in REFERENCE_ZEROS.iter() {
+            let z = find_zero(z0 - 0.5, z0 + 0.5, 1e-10, 2)
+                .unwrap_or_else(|| panic!("no zero bracketed near {z0}"));
+            assert!((z - z0).abs() < 1e-2, "got {z}, expected ~{z0}");
+        }
+    }
+
+    #[test]
+    fn find_zero_rejects_invalid_input() {
+        assert_eq!(find_zero(f64::NAN, 15.0, 1e-10, 0), None);
+        assert_eq!(find_zero(15.0, 14.0, 1e-10, 0), None); // a >= b
+        assert_eq!(find_zero(5.0, 6.0, 1e-10, 0), None); // no zero here -> no sign change
+    }
+
+    #[test]
+    fn estimate_t_handles_small_n() {
+        // n = 1 used to produce NaN (and an infinite bisection loop downstream).
+        assert!((estimate_t(1.0) - REFERENCE_ZEROS[0]).abs() < 1e-6);
+        assert!(estimate_t(0.0).is_nan());
+        assert!(estimate_t(-5.0).is_nan());
+    }
+
+    #[test]
+    fn estimate_t_is_finite_for_large_n() {
+        let t = estimate_t(1_000_000.0);
+        assert!(t.is_finite() && t > 0.0);
+    }
+
+    #[test]
+    fn z_func_rejects_nonpositive_t() {
+        assert!(z_func(0.0, 0).is_nan());
+        assert!(z_func(-1.0, 0).is_nan());
+        assert!(z_func(f64::NAN, 0).is_nan());
+    }
 }
