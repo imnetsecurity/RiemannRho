@@ -24,5 +24,9 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    - name: Clippy (bigfloat feature)
+      run: cargo clippy --all-targets --features bigfloat -- -D warnings
+    - name: Run tests (bigfloat feature)
+      run: cargo test --features bigfloat --verbose
     - name: Build release
       run: cargo build --release --verbose

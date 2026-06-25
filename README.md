@@ -31,7 +31,7 @@ Licensed under MIT, RiemannRho promotes open collaboration in mathematical softw
 - **High-Order Correction Mode**: Invoke `--high-order` to include the $C_1$ and $C_2$ correction terms, reducing the asymptotic error.
 - **Browser-Based Plots**: Post-calculation prompt generates an HTML file (default `zeta_plot.html`, configurable with `--out`) with a D3.js visualization: line, axes, and a red zero marker.
 - **Flexible Interfaces**: Command-line parameters or interactive prompts, with customizable tolerance for convergence control.
-- **Dependency-Free**: Built exclusively on Rust's standard library, guaranteeing cross-platform reliability.
+- **Dependency-Free by Default**: The default build uses only Rust's standard library. Arbitrary precision is an opt-in feature (`bigfloat`) that pulls in a single pure-Rust crate.
 
 ## Installation
 
@@ -68,6 +68,8 @@ Execute with arguments or via interactive mode.
   count $\theta(T)/\pi + 1$ (a Turing-flavored consistency check — see below).
 - `--list T`: Print every zero with $0 < t \le T$, one per line.
 - `--gram N`: Print the first $N$ Gram points and check Gram's law at each.
+- `--digits D`: Locate the zero in arbitrary precision with $D$ decimal digits (requires
+  the optional `bigfloat` feature; most useful at large $t$ — see [Arbitrary Precision](#arbitrary-precision)).
 - `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
 - `-h`, `--help`: Print usage.
 
@@ -126,6 +128,27 @@ Upon completion, the tool prints the zero approximation and asks: "Do you want a
    ./target/release/riemannrho --gram 10 --high-order
    ```
    Prints the first 10 Gram points $g_n$ and confirms $(-1)^n Z(g_n) > 0$ at each.
+
+## Arbitrary Precision
+
+By default RiemannRho is fully dependency-free and uses 64-bit floating point. At large
+$t$ this hits a hard ceiling: the main-sum argument $\theta(t) - t\ln k$ grows like
+$t\ln t$, so once it exceeds ~$10^{15}$, `f64` can no longer pin the fractional part that
+$\cos$ needs (catastrophic cancellation).
+
+The optional **`bigfloat`** feature breaks this ceiling by evaluating the same
+Riemann-Siegel formula in arbitrary precision (via the pure-Rust `dashu-float` crate). Build
+with it and pass `--digits D`:
+
+```
+cargo build --release --features bigfloat
+./target/release/riemannrho --nth 10000 --high-order --digits 25
+```
+
+For the 10000th zero this extends the result from the `f64` value `9881.1023608652` to
+`9881.102360865374067`. (At small $t$ the dominant error is the asymptotic truncation of
+the remainder series, which extra precision cannot fix — so `--digits` matters most at large
+$t$.) The default build needs neither the feature nor the dependency.
 
 ## Gram Points
 

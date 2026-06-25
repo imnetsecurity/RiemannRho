@@ -7,6 +7,10 @@
 
 use std::f64::consts::PI;
 
+/// Optional arbitrary-precision evaluation (enable with the `bigfloat` feature).
+#[cfg(feature = "bigfloat")]
+pub mod bigfloat;
+
 /// Maximum number of root-finding iterations before [`find_zero`] gives up.
 ///
 /// With `f64` a bracket can be halved at most ~60 times before reaching the limit of

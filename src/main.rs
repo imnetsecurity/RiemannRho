@@ -37,6 +37,8 @@ OPTIONS:
                      count theta(T)/pi + 1 (a Turing-flavored consistency check).
     --list T         Print every zero with 0 < t <= T, one per line.
     --gram N         Print the first N Gram points and check Gram's law at each.
+    --digits D       Locate the zero in arbitrary precision with D decimal digits
+                     (requires building with --features bigfloat; best for large t).
     --out FILE       Path for the generated plot (default: {DEFAULT_PLOT_PATH}).
     -h, --help       Print this help.
 
@@ -67,6 +69,7 @@ struct CliArgs {
     count: Option<f64>,
     list: Option<f64>,
     gram: Option<u64>,
+    digits: Option<usize>,
     out: String,
 }
 
@@ -80,6 +83,7 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         count: None,
         list: None,
         gram: None,
+        digits: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
 
@@ -130,6 +134,17 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                     .parse()
                     .map_err(|_| format!("invalid value for --gram: {v:?}"))?;
                 cli.gram = Some(n);
+            }
+            "--digits" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--digits requires a value".to_string())?;
+                let n: usize = v
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("invalid value for --digits: {v:?}"))?;
+                cli.digits = Some(n);
             }
             "--out" => {
                 i += 1;
@@ -249,6 +264,32 @@ fn resolve_interval(cli: &CliArgs) -> Result<(f64, f64, f64), String> {
     }
 }
 
+/// Refines the zero in `[low, high]`, using arbitrary precision when `--digits` is set.
+fn resolve_zero(
+    low: f64,
+    high: f64,
+    tol: f64,
+    precision: Precision,
+    digits: Option<usize>,
+) -> Result<Option<f64>, String> {
+    match digits {
+        None => Ok(find_zero(low, high, tol, precision)),
+        Some(d) => {
+            #[cfg(feature = "bigfloat")]
+            {
+                Ok(riemannrho::bigfloat::find_zero(
+                    low, high, tol, d, precision,
+                ))
+            }
+            #[cfg(not(feature = "bigfloat"))]
+            {
+                let _ = d;
+                Err("--digits requires building with --features bigfloat".to_string())
+            }
+        }
+    }
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
     let program = args
@@ -321,10 +362,11 @@ fn run() -> Result<(), String> {
 
     let (low, high, tol) = resolve_interval(&cli)?;
 
-    let zero = find_zero(low, high, tol, cli.precision);
+    let zero = resolve_zero(low, high, tol, cli.precision, cli.digits)?;
     match zero {
         Some(zero_t) => {
-            println!("Approximate imaginary part of the nontrivial zero: {zero_t:.10}");
+            let digits = cli.digits.map(|d| d.min(15)).unwrap_or(10);
+            println!("Approximate imaginary part of the nontrivial zero: {zero_t:.digits$}");
         }
         None => {
             println!("No sign change detected in [{low}, {high}]. Adjust the interval or try a different n.");

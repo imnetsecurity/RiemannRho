@@ -12,5 +12,13 @@ categories = ["science", "mathematics"]
 [lib]
 crate-type = ["rlib"]
 
+[features]
+# Default build is fully self-contained (no dependencies).
+default = []
+# Optional arbitrary-precision evaluation, which breaks the f64 accuracy ceiling at
+# large t. Pulls in the pure-Rust `dashu-float` crate; enable with `--features bigfloat`.
+bigfloat = ["dep:dashu-float"]
+
 [dependencies]
-# No dependencies required; fully self-contained
+# Optional; only compiled in when the `bigfloat` feature is enabled.
+dashu-float = { version = "0.4", optional = true }
