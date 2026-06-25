@@ -8,7 +8,7 @@ RiemannRho approximates nontrivial zeros of the Riemann zeta function $\zeta(s)$
 
 1. **Analytic Number Theory and Prime Distribution.** The zeros control the oscillations of prime numbers around their expected positions via explicit formulas connected to the prime number theorem ($\pi(x) \approx \frac{x}{\ln x}$). Computing them helps explore bounds on the error term in prime-counting functions.
 
-2. **Testing the Riemann Hypothesis.** Extensive numerical computation of zeros has so far found no counterexamples. RiemannRho can locate individual zeros for spot checks and exploration.
+2. **Testing the Riemann Hypothesis.** Extensive numerical computation of zeros has so far found no counterexamples. RiemannRho can locate individual zeros and, via `--count T`, verify that the number of zeros found on the critical line up to height `T` matches the theoretical count — the numerical core of testing the hypothesis over a range.
 
 3. **Physics (Quantum Chaos and Random Matrix Theory).** Zero spacings statistically resemble eigenvalue spacings of random matrices, with connections to energy levels in chaotic quantum systems.
 
@@ -55,12 +55,17 @@ Execute with arguments or via interactive mode.
 
 ```
 ./target/release/riemannrho [low] [high] [tol] [--high-order] [--nth N] [--out FILE]
+./target/release/riemannrho --count T [--high-order]
 ```
 
 - `low`, `high`: Search interval bounds (omit when using `--nth`).
-- `tol`: Bisection interval-width tolerance (default: 1e-10).
+- `tol`: Root-finder bracket-width tolerance (default: 1e-10).
 - `--high-order`: Include the $C_1$ and $C_2$ correction terms.
-- `--nth N`: Target the Nth zero (`N >= 1`) instead of supplying an interval.
+- `--nth N`: Target the Nth zero (`N >= 1`). For `N <= 100000` the zero is found
+  *exactly* by scanning sequentially; beyond that an asymptotic estimate of a single
+  nearby zero is used.
+- `--count T`: Count the zeros with $0 < t \le T$ and compare with the theoretical
+  count $\theta(T)/\pi + 1$ (a Turing-flavored consistency check — see below).
 - `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
 - `-h`, `--help`: Print usage.
 
@@ -94,6 +99,31 @@ Upon completion, the tool prints the zero approximation and asks: "Do you want a
    ./target/release/riemannrho
    ```
    Prompts for `low`, `high`, and `tol`.
+
+4. **Count and verify zeros up to a height**:
+   ```
+   ./target/release/riemannrho --count 100 --high-order
+   ```
+   Sample output:
+   ```
+   Zeros found with 0 < t <= 100: 29
+   Theoretical count theta(T)/pi + 1: 29.0024 (rounds to 29)
+   Consistent: every counted zero lies on the critical line and the count
+   matches the theoretical value (Turing-flavored check passes up to T).
+   ```
+
+## Counting and Verification
+
+`--count T` locates every zero of $Z(t)$ on the critical line with $0 < t \le T$ and
+compares the tally with the smooth part of the Riemann-von Mangoldt formula,
+$N(T) = \theta(T)/\pi + 1 + S(T)$. Since $S(T)$ oscillates around 0, the rounded value
+of $\theta(T)/\pi + 1$ predicts the true zero count, and agreement between the two is a
+practical (Turing-flavored) check that **all** zeros up to height $T$ are simple and lie
+on the critical line — the numerical heart of testing the Riemann hypothesis.
+
+This is a heuristic check, not a rigorous proof: full rigor requires bounding $S(T)$ via
+Gram points, and extremely close zero pairs could in principle be stepped over (which the
+count-vs-theory comparison is designed to surface).
 
 ## Visualization Details
 

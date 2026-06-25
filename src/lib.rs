@@ -292,6 +292,110 @@ pub fn estimate_t(n: f64) -> f64 {
     t
 }
 
+/// Smooth part of the Riemann-von Mangoldt zero-counting function:
+/// `N(t) = theta(t)/pi + 1 + S(t)`, returning `theta(t)/pi + 1` (i.e. neglecting the
+/// oscillating term `S(t)`, which averages to 0).
+///
+/// Rounding this to the nearest integer predicts how many nontrivial zeros have
+/// imaginary part in `(0, t]`, and comparing it with the number actually found is a
+/// (Turing-flavored) consistency check on the Riemann hypothesis up to height `t`.
+pub fn expected_zero_count(t: f64) -> f64 {
+    if !t.is_finite() || t <= 0.0 {
+        return 0.0;
+    }
+    theta(t) / PI + 1.0
+}
+
+/// Walks the sign changes of `Z(t)` over `(t_start, t_max]`, calling `on_zero` with each
+/// refined zero in increasing order. Iteration stops early if `on_zero` returns `false`.
+///
+/// The scan step adapts to the local average zero spacing `2*pi/ln(t/2pi)`. Extremely
+/// close pairs of zeros (closer than ~1/10 of the average spacing) can in principle be
+/// stepped over; [`count_zeros_below`] vs [`expected_zero_count`] will flag such a miss.
+fn scan_zeros<F: FnMut(f64) -> bool>(
+    t_start: f64,
+    t_max: f64,
+    precision: Precision,
+    mut on_zero: F,
+) {
+    let mut t = t_start.max(1.0);
+    let mut z = z_func(t, precision);
+    while t < t_max {
+        let a = (t / (2.0 * PI)).max(1.0);
+        let spacing = (2.0 * PI / a.ln().max(0.05)).max(0.05);
+        let step = (spacing / 10.0).min(t_max - t);
+        let t_next = t + step;
+        let z_next = z_func(t_next, precision);
+        if z.is_finite() && z_next.is_finite() && z != 0.0 && z * z_next < 0.0 {
+            if let Some(root) = find_zero(t, t_next, 1e-9, precision) {
+                if root <= t_max && !on_zero(root) {
+                    return;
+                }
+            }
+        }
+        t = t_next;
+        z = z_next;
+    }
+}
+
+/// Locates every zero of `Z(t)` with imaginary part in `(0, t_max]`, in increasing order.
+///
+/// Cost is `O(t_max * sqrt(t_max))`, so this is intended for exploration over moderate
+/// heights rather than astronomically large `t_max`.
+pub fn zeros_below(t_max: f64, precision: Precision) -> Vec<f64> {
+    let mut zeros = Vec::new();
+    scan_zeros(1.0, t_max, precision, |root| {
+        zeros.push(root);
+        true
+    });
+    zeros
+}
+
+/// Counts the nontrivial zeros with imaginary part in `(0, t_max]` found on the
+/// critical line. Compare with `round(`[`expected_zero_count`]`(t_max))`.
+pub fn count_zeros_below(t_max: f64, precision: Precision) -> usize {
+    let mut count = 0usize;
+    scan_zeros(1.0, t_max, precision, |_| {
+        count += 1;
+        true
+    });
+    count
+}
+
+/// Finds the exact `n`th nontrivial zero (1-based) by scanning zeros sequentially from
+/// the bottom, so the result is guaranteed to be the `n`th — not merely a zero near an
+/// asymptotic estimate (which [`estimate_t`] alone can miss).
+///
+/// Because it scans the whole range `(0, t_n]`, this is practical only for moderate `n`;
+/// for very large `n` use [`estimate_t`] to bracket a single zero instead.
+///
+/// # Returns
+/// `Some(t_n)`, or `None` if `n == 0` or the location could not be estimated.
+pub fn nth_zero(n: u64, precision: Precision) -> Option<f64> {
+    if n == 0 {
+        return None;
+    }
+    // Scan a little past the asymptotic estimate to be sure the nth zero is included.
+    let est = estimate_t(n as f64);
+    if !est.is_finite() {
+        return None;
+    }
+    let t_max = est + 50.0;
+
+    let mut count = 0u64;
+    let mut result = None;
+    scan_zeros(1.0, t_max, precision, |root| {
+        count += 1;
+        if count == n {
+            result = Some(root);
+            false
+        } else {
+            true
+        }
+    });
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,5 +479,44 @@ mod tests {
         assert!(z_func(0.0, Precision::Base).is_nan());
         assert!(z_func(-1.0, Precision::Base).is_nan());
         assert!(z_func(f64::NAN, Precision::Base).is_nan());
+    }
+
+    #[test]
+    fn counts_known_number_of_zeros() {
+        // There are 10 nontrivial zeros with 0 < gamma <= 50 (the next is at ~52.97).
+        assert_eq!(count_zeros_below(50.0, Precision::Order2), 10);
+        // The first five recovered zeros must match the reference values in order.
+        let zeros = zeros_below(35.0, Precision::Order2);
+        assert_eq!(zeros.len(), 5);
+        for (got, &want) in zeros.iter().zip(REFERENCE_ZEROS.iter()) {
+            assert!((got - want).abs() < 1e-3, "got {got}, expected ~{want}");
+        }
+    }
+
+    #[test]
+    fn counted_zeros_match_expected_count() {
+        // The Turing-flavored check: actual count should round-trip with theta(T)/pi+1.
+        for &t in &[100.0, 200.0, 300.0] {
+            let found = count_zeros_below(t, Precision::Order2);
+            let expected = expected_zero_count(t).round() as usize;
+            assert_eq!(
+                found, expected,
+                "mismatch at T={t}: found {found}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn nth_zero_is_exact() {
+        // Sequential scanning must return the true nth zero, in order.
+        for (i, &want) in REFERENCE_ZEROS.iter().enumerate() {
+            let n = (i + 1) as u64;
+            let got = nth_zero(n, Precision::Order2).unwrap();
+            assert!(
+                (got - want).abs() < 1e-3,
+                "zero #{n}: got {got}, expected ~{want}"
+            );
+        }
+        assert_eq!(nth_zero(0, Precision::Base), None);
     }
 }

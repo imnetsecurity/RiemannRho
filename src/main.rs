@@ -1,6 +1,8 @@
 //! Binary executable for RiemannRho: command-line interface, computation, and visualization.
 
-use riemannrho::{estimate_t, find_zero, z_func, Precision};
+use riemannrho::{
+    count_zeros_below, estimate_t, expected_zero_count, find_zero, nth_zero, z_func, Precision,
+};
 use std::env;
 use std::fs::File;
 use std::io::{self, Write};
@@ -8,6 +10,9 @@ use std::process::ExitCode;
 
 const DEFAULT_TOL: f64 = 1e-10;
 const DEFAULT_PLOT_PATH: &str = "zeta_plot.html";
+/// Largest ordinal for which `--nth` scans sequentially for the *exact* nth zero;
+/// beyond this it falls back to the asymptotic estimate of a single nearby zero.
+const NTH_EXACT_MAX: f64 = 100_000.0;
 
 fn print_usage(program: &str) {
     eprintln!(
@@ -15,21 +20,26 @@ fn print_usage(program: &str) {
 
 USAGE:
     {program} [low] [high] [tol] [--high-order] [--nth N] [--out FILE]
+    {program} --count T [--high-order]
     {program}                      (interactive mode)
 
 ARGUMENTS:
-    low, high    Search interval bounds for bisection (omit when using --nth).
-    tol          Interval-width tolerance for bisection (default: {DEFAULT_TOL}).
+    low, high    Search interval bounds for the root finder (omit when using --nth).
+    tol          Bracket-width tolerance for the root finder (default: {DEFAULT_TOL}).
 
 OPTIONS:
     --high-order     Include higher-order Riemann-Siegel correction terms.
-    --nth N          Target the Nth zero (N >= 1) instead of giving an interval.
+    --nth N          Target the Nth zero (N >= 1). Exact for N <= {NTH_EXACT_MAX:.0},
+                     asymptotic estimate beyond that.
+    --count T        Count zeros with 0 < t <= T and compare with the theoretical
+                     count theta(T)/pi + 1 (a Turing-flavored consistency check).
     --out FILE       Path for the generated plot (default: {DEFAULT_PLOT_PATH}).
     -h, --help       Print this help.
 
 EXAMPLES:
     {program} 14 15 1e-10 --high-order
     {program} --nth 1 --high-order
+    {program} --count 100 --high-order
     {program}"
     );
 }
@@ -48,6 +58,7 @@ struct CliArgs {
     tol: f64,
     precision: Precision,
     nth: Option<f64>,
+    count: Option<f64>,
     out: String,
 }
 
@@ -58,6 +69,7 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         tol: DEFAULT_TOL,
         precision: Precision::Base,
         nth: None,
+        count: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
 
@@ -75,6 +87,17 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                     return Err(format!("--nth must be >= 1 (got {n})"));
                 }
                 cli.nth = Some(n);
+            }
+            "--count" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--count requires a value".to_string())?;
+                let t = parse_f64(v, "--count")?;
+                if t <= 0.0 {
+                    return Err(format!("--count must be > 0 (got {t})"));
+                }
+                cli.count = Some(t);
             }
             "--out" => {
                 i += 1;
@@ -145,22 +168,29 @@ fn bracket_near(center: f64, radius: f64, precision: Precision) -> Option<(f64, 
 /// Resolves the search interval and tolerance, prompting interactively if needed.
 fn resolve_interval(cli: &CliArgs) -> Result<(f64, f64, f64), String> {
     if let Some(n) = cli.nth {
-        let est = estimate_t(n);
-        if !est.is_finite() {
-            return Err(format!("could not estimate the {n}th zero"));
-        }
-        if est > 1e30 {
-            eprintln!("Warning: n={n} is extremely large; computation may be very slow.");
-        }
-        // The estimate is only approximate, so search a window a few average spacings
-        // wide and scan for the sign-change bracket nearest the estimate. A naive
-        // [est - spacing, est + spacing] window can straddle two zeros, in which case
-        // the endpoints share a sign and no zero is detected.
-        let spacing = (2.0 * std::f64::consts::PI / (est / (2.0 * std::f64::consts::PI)).ln())
+        // For moderate, integer n, scan sequentially for the *exact* nth zero; otherwise
+        // fall back to the asymptotic estimate of a single nearby zero.
+        let center = if n.fract() == 0.0 && (1.0..=NTH_EXACT_MAX).contains(&n) {
+            nth_zero(n as u64, cli.precision)
+                .ok_or_else(|| format!("could not locate zero #{n}"))?
+        } else {
+            let est = estimate_t(n);
+            if !est.is_finite() {
+                return Err(format!("could not estimate the {n}th zero"));
+            }
+            if est > 1e30 {
+                eprintln!("Warning: n={n} is extremely large; computation may be very slow.");
+            }
+            est
+        };
+        // Search a window a few average spacings wide and bracket the sign change
+        // nearest the center. A naive [c - spacing, c + spacing] window can straddle
+        // two zeros, in which case the endpoints share a sign and none is detected.
+        let spacing = (2.0 * std::f64::consts::PI / (center / (2.0 * std::f64::consts::PI)).ln())
             .abs()
             .max(1.0);
-        let (low, high) = bracket_near(est, 3.0 * spacing, cli.precision).ok_or_else(|| {
-            format!("no zero found near the estimated location t ~= {est:.4} for n = {n}")
+        let (low, high) = bracket_near(center, 3.0 * spacing, cli.precision).ok_or_else(|| {
+            format!("no zero found near the located position t ~= {center:.4} for n = {n}")
         })?;
         Ok((low, high, cli.tol))
     } else if let (Some(low), Some(high)) = (cli.low, cli.high) {
@@ -201,6 +231,28 @@ fn run() -> Result<(), String> {
     }
 
     let cli = parse_args(&args)?;
+
+    // Counting mode is a standalone report; it does not produce a single zero or plot.
+    if let Some(t_max) = cli.count {
+        let found = count_zeros_below(t_max, cli.precision);
+        let expected = expected_zero_count(t_max);
+        let rounded = expected.round() as i64;
+        println!("Zeros found with 0 < t <= {t_max}: {found}");
+        println!("Theoretical count theta(T)/pi + 1: {expected:.4} (rounds to {rounded})");
+        if found as i64 == rounded {
+            println!(
+                "Consistent: every counted zero lies on the critical line and the count \
+                 matches the theoretical value (Turing-flavored check passes up to T)."
+            );
+        } else {
+            println!(
+                "Mismatch: found {found} vs expected {rounded}. This can happen when T is \
+                 very close to a zero, or if a closely spaced pair was stepped over."
+            );
+        }
+        return Ok(());
+    }
+
     let (low, high, tol) = resolve_interval(&cli)?;
 
     let zero = find_zero(low, high, tol, cli.precision);
