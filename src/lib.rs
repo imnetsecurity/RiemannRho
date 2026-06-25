@@ -1,18 +1,44 @@
 //! RiemannRho: Library for approximating nontrivial zeros of the Riemann zeta function.
 //!
 //! This module provides functions to compute Hardy's Z-function using the Riemann-Siegel formula,
-//! find zeros via bisection, and estimate the nth zero. It supports optional higher-order remainder
-//! terms for precision (High-Order Correction Mode). No visualization or I/O is included here;
-//! that belongs to the binaries.
+//! find zeros via a bracketed root finder, and estimate the nth zero. It supports optional
+//! higher-order remainder terms for precision (High-Order Correction Mode). No visualization or
+//! I/O is included here; that belongs to the binaries.
 
 use std::f64::consts::PI;
 
-/// Maximum number of bisection iterations before [`find_zero`] gives up.
+/// Maximum number of root-finding iterations before [`find_zero`] gives up.
 ///
-/// With `f64` the interval width can be halved at most ~60 times before reaching the
-/// limit of representable precision, so this also guards against an infinite loop when
-/// `tol` is set to 0 (or smaller than the floating-point resolution).
-const MAX_BISECTION_ITERS: u32 = 200;
+/// With `f64` a bracket can be halved at most ~60 times before reaching the limit of
+/// representable precision, so this also guards against an infinite loop when `tol` is
+/// set to 0 (or smaller than the floating-point resolution). The cap is generous to
+/// leave room for the secant-accelerated steps.
+const MAX_ROOT_ITERS: u32 = 200;
+
+/// Number of remainder correction terms to include when evaluating [`z_func`].
+///
+/// The corrections follow the Riemann-Siegel expansion; higher variants reduce the
+/// asymptotic error at the cost of a few extra evaluations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Precision {
+    /// Main sum plus the leading `C0` remainder term only.
+    Base,
+    /// Adds the `C1` correction.
+    Order1,
+    /// Adds the `C1` and `C2` corrections (the "high-order" mode).
+    Order2,
+}
+
+impl Precision {
+    /// Number of remainder correction terms beyond `C0`.
+    fn correction_terms(self) -> u32 {
+        match self {
+            Precision::Base => 0,
+            Precision::Order1 => 1,
+            Precision::Order2 => 2,
+        }
+    }
+}
 
 /// Computes the Riemann-Siegel theta function approximation.
 ///
@@ -33,12 +59,14 @@ pub fn theta(t: f64) -> f64 {
 /// Approximates the `n`th derivative of `f` at `x` using a central-difference stencil
 /// with one level of Richardson extrapolation.
 ///
-/// The previous implementation used a recursive central difference with a fixed tiny
-/// step (`h = 1e-5`). For high orders that is catastrophically unstable: dividing by
+/// A fixed tiny step would be catastrophically unstable for high orders: dividing by
 /// `(2h)^n` amplifies the ~1e-16 rounding noise of `f` by many orders of magnitude
-/// (for `n = 6` by roughly 1e13), so the result was pure noise. Here we use explicit
-/// stencils with a step appropriate to the order and Richardson-extrapolate `D(h)` and
-/// `D(h/2)` to cancel the leading `O(h^2)` truncation error.
+/// (for `n = 6` by roughly 1e13). Here we use explicit stencils with a step appropriate
+/// to the order and Richardson-extrapolate `D(h)` and `D(h/2)` to cancel the leading
+/// `O(h^2)` truncation error.
+///
+/// Accuracy still degrades near the poles of the Riemann-Siegel `Psi` function
+/// (fractional part `p ≈ 0.25` or `0.75`).
 fn nth_derivative<F: Fn(f64) -> f64 + Copy>(f: F, x: f64, n: u32, h: f64) -> f64 {
     let stencil = |h: f64| -> f64 {
         match n {
@@ -85,11 +113,11 @@ fn nth_derivative<F: Fn(f64) -> f64 + Copy>(f: F, x: f64, n: u32, h: f64) -> f64
 ///
 /// # Arguments
 /// * `t` - Imaginary part (must be > 0).
-/// * `terms` - Number of remainder correction terms (0: C0 only, 1: +C1, 2: +C1+C2).
+/// * `precision` - Which remainder correction terms to include.
 ///
 /// # Returns
 /// Z(t) value. Returns `NaN` for non-positive or non-finite `t`.
-pub fn z_func(t: f64, terms: u32) -> f64 {
+pub fn z_func(t: f64, precision: Precision) -> f64 {
     if !t.is_finite() || t <= 0.0 {
         return f64::NAN;
     }
@@ -119,6 +147,7 @@ pub fn z_func(t: f64, terms: u32) -> f64 {
     let c0 = psi(p);
     let mut r = sign * scale * c0;
 
+    let terms = precision.correction_terms();
     if terms >= 1 {
         let psi3 = nth_derivative(psi, p, 3, 0.05);
         let c1 = -1.0 / (96.0 * PI * PI) * psi3;
@@ -135,51 +164,76 @@ pub fn z_func(t: f64, terms: u32) -> f64 {
     sum + r
 }
 
-/// Finds a zero of Z(t) in `[a, b]` using bisection.
+/// Finds a zero of Z(t) in `[a, b]`.
+///
+/// Uses a bracketed root finder: a secant (false-position) step when it lands safely
+/// inside the bracket, otherwise a bisection step. A bisection step is also forced
+/// whenever the bracket fails to shrink by at least half, which guarantees convergence
+/// at least as fast as plain bisection while typically being faster.
+///
+/// **Note:** the bracket must be evaluated with the same `precision` it will be refined
+/// with. Because `Z(t)` differs slightly between precisions, a sign change that brackets
+/// a zero at one precision may not bracket it at another.
 ///
 /// # Arguments
 /// * `a` - Lower bound.
 /// * `b` - Upper bound.
-/// * `tol` - Tolerance on the interval width.
-/// * `terms` - Remainder terms count.
+/// * `tol` - Tolerance on the bracket width.
+/// * `precision` - Remainder correction terms to use.
 ///
 /// # Returns
 /// `Some(t)` if a sign change is bracketed, `None` if the inputs are invalid or there
 /// is no sign change in the interval.
-pub fn find_zero(a: f64, b: f64, tol: f64, terms: u32) -> Option<f64> {
+pub fn find_zero(a: f64, b: f64, tol: f64, precision: Precision) -> Option<f64> {
     // Reject invalid input outright. Without this an NaN bound (e.g. from a bad nth
-    // estimate) made the old loop spin forever, because `(b - a) < tol` is never true
-    // when `b - a` is NaN.
+    // estimate) made an unguarded loop spin forever, because `(b - a) < tol` is never
+    // true when `b - a` is NaN.
     if !a.is_finite() || !b.is_finite() || a >= b {
         return None;
     }
 
     let mut lo = a;
     let mut hi = b;
-    let mut z_lo = z_func(lo, terms);
-    let z_hi = z_func(hi, terms);
-    if !z_lo.is_finite() || !z_hi.is_finite() {
-        return None;
-    }
-    if z_lo * z_hi > 0.0 {
+    let mut f_lo = z_func(lo, precision);
+    let mut f_hi = z_func(hi, precision);
+    if !f_lo.is_finite() || !f_hi.is_finite() || f_lo * f_hi > 0.0 {
         return None;
     }
 
-    for _ in 0..MAX_BISECTION_ITERS {
-        let mid = lo + (hi - lo) / 2.0;
-        if (hi - lo) < tol {
-            return Some(mid);
+    let mut force_bisect = false;
+    for _ in 0..MAX_ROOT_ITERS {
+        let width = hi - lo;
+        if width < tol {
+            return Some(lo + width / 2.0);
         }
-        let z_mid = z_func(mid, terms);
-        if z_mid == 0.0 {
-            return Some(mid);
-        }
-        if z_lo * z_mid > 0.0 {
-            lo = mid;
-            z_lo = z_mid;
+
+        // Secant / false-position candidate, accepted only when it lies comfortably
+        // inside the bracket; otherwise (or when progress stalled) bisect.
+        let mid = if force_bisect {
+            lo + width / 2.0
         } else {
-            hi = mid;
+            let s = lo - f_lo * (hi - lo) / (f_hi - f_lo);
+            if s.is_finite() && s > lo + 0.05 * width && s < hi - 0.05 * width {
+                s
+            } else {
+                lo + width / 2.0
+            }
+        };
+
+        let f_mid = z_func(mid, precision);
+        if f_mid == 0.0 {
+            return Some(mid);
         }
+        if f_lo * f_mid < 0.0 {
+            hi = mid;
+            f_hi = f_mid;
+        } else {
+            lo = mid;
+            f_lo = f_mid;
+        }
+        // If the bracket barely shrank, force a bisection next iteration so width is
+        // guaranteed to keep falling toward `tol`.
+        force_bisect = (hi - lo) > 0.5 * width;
     }
     Some(lo + (hi - lo) / 2.0)
 }
@@ -190,6 +244,10 @@ pub fn find_zero(a: f64, b: f64, tol: f64, terms: u32) -> Option<f64> {
 /// with Newton's method. For very small `n` the asymptotic counting formula is poor, so
 /// the first handful of zeros are returned from a small table of known values to provide
 /// a robust bracket for [`find_zero`].
+///
+/// `n` is taken as `f64` so that very large ordinals can be requested in scientific
+/// notation; note that beyond `2^53` the integer value can no longer be represented
+/// exactly.
 ///
 /// # Arguments
 /// * `n` - Zero index (1-based).
@@ -249,7 +307,8 @@ mod tests {
 
     #[test]
     fn finds_first_zero_within_tolerance() {
-        let z = find_zero(14.0, 15.0, 1e-10, 2).expect("first zero should be bracketed");
+        let z = find_zero(14.0, 15.0, 1e-10, Precision::Order2)
+            .expect("first zero should be bracketed");
         assert!(
             (z - REFERENCE_ZEROS[0]).abs() < 1e-3,
             "got {z}, expected ~{}",
@@ -259,8 +318,8 @@ mod tests {
 
     #[test]
     fn high_order_is_at_least_as_accurate_as_base() {
-        let base = find_zero(14.0, 15.0, 1e-12, 0).unwrap();
-        let high = find_zero(14.0, 15.0, 1e-12, 2).unwrap();
+        let base = find_zero(14.0, 15.0, 1e-12, Precision::Base).unwrap();
+        let high = find_zero(14.0, 15.0, 1e-12, Precision::Order2).unwrap();
         let err_base = (base - REFERENCE_ZEROS[0]).abs();
         let err_high = (high - REFERENCE_ZEROS[0]).abs();
         assert!(
@@ -273,22 +332,33 @@ mod tests {
     fn brackets_several_known_zeros() {
         // Search a window around each reference zero and confirm we recover it.
         for &z0 in REFERENCE_ZEROS.iter() {
-            let z = find_zero(z0 - 0.5, z0 + 0.5, 1e-10, 2)
+            let z = find_zero(z0 - 0.5, z0 + 0.5, 1e-10, Precision::Order2)
                 .unwrap_or_else(|| panic!("no zero bracketed near {z0}"));
             assert!((z - z0).abs() < 1e-2, "got {z}, expected ~{z0}");
         }
     }
 
     #[test]
+    fn secant_and_bisection_agree() {
+        // The accelerated finder must land on the same root as plain bisection would.
+        for &z0 in REFERENCE_ZEROS.iter() {
+            let z = find_zero(z0 - 0.4, z0 + 0.4, 1e-12, Precision::Base).unwrap();
+            assert!((z - z0).abs() < 1e-2, "got {z}, expected ~{z0}");
+            // The reported point must actually be (nearly) a zero of Z.
+            assert!(z_func(z, Precision::Base).abs() < 1e-6);
+        }
+    }
+
+    #[test]
     fn find_zero_rejects_invalid_input() {
-        assert_eq!(find_zero(f64::NAN, 15.0, 1e-10, 0), None);
-        assert_eq!(find_zero(15.0, 14.0, 1e-10, 0), None); // a >= b
-        assert_eq!(find_zero(5.0, 6.0, 1e-10, 0), None); // no zero here -> no sign change
+        assert_eq!(find_zero(f64::NAN, 15.0, 1e-10, Precision::Base), None);
+        assert_eq!(find_zero(15.0, 14.0, 1e-10, Precision::Base), None); // a >= b
+        assert_eq!(find_zero(5.0, 6.0, 1e-10, Precision::Base), None); // no sign change
     }
 
     #[test]
     fn estimate_t_handles_small_n() {
-        // n = 1 used to produce NaN (and an infinite bisection loop downstream).
+        // n = 1 used to produce NaN (and an infinite root-finding loop downstream).
         assert!((estimate_t(1.0) - REFERENCE_ZEROS[0]).abs() < 1e-6);
         assert!(estimate_t(0.0).is_nan());
         assert!(estimate_t(-5.0).is_nan());
@@ -302,8 +372,8 @@ mod tests {
 
     #[test]
     fn z_func_rejects_nonpositive_t() {
-        assert!(z_func(0.0, 0).is_nan());
-        assert!(z_func(-1.0, 0).is_nan());
-        assert!(z_func(f64::NAN, 0).is_nan());
+        assert!(z_func(0.0, Precision::Base).is_nan());
+        assert!(z_func(-1.0, Precision::Base).is_nan());
+        assert!(z_func(f64::NAN, Precision::Base).is_nan());
     }
 }

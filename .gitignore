@@ -1,1 +1,7 @@
 /target
+
+# IDE settings
+/.idea
+
+# Generated visualization artifact
+/zeta_plot.html

@@ -1,6 +1,6 @@
 //! Binary executable for RiemannRho: command-line interface, computation, and visualization.
 
-use riemannrho::{estimate_t, find_zero, z_func};
+use riemannrho::{estimate_t, find_zero, z_func, Precision};
 use std::env;
 use std::fs::File;
 use std::io::{self, Write};
@@ -46,7 +46,7 @@ struct CliArgs {
     low: Option<f64>,
     high: Option<f64>,
     tol: f64,
-    terms: u32,
+    precision: Precision,
     nth: Option<f64>,
     out: String,
 }
@@ -56,7 +56,7 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         low: None,
         high: None,
         tol: DEFAULT_TOL,
-        terms: 0,
+        precision: Precision::Base,
         nth: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
@@ -64,7 +64,7 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--high-order" => cli.terms = 2,
+            "--high-order" => cli.precision = Precision::Order2,
             "--nth" => {
                 i += 1;
                 let v = args
@@ -117,7 +117,7 @@ fn read_f64(
 
 /// Scans `[center - radius, center + radius]` for the sign-change bracket of `Z(t)`
 /// whose midpoint is closest to `center`, returning it as `(lo, hi)`.
-fn bracket_near(center: f64, radius: f64, terms: u32) -> Option<(f64, f64)> {
+fn bracket_near(center: f64, radius: f64, precision: Precision) -> Option<(f64, f64)> {
     const SAMPLES: usize = 400;
     let lo = center - radius;
     let step = 2.0 * radius / SAMPLES as f64;
@@ -125,10 +125,10 @@ fn bracket_near(center: f64, radius: f64, terms: u32) -> Option<(f64, f64)> {
     let mut best: Option<(f64, f64)> = None;
     let mut best_dist = f64::INFINITY;
     let mut t_prev = lo;
-    let mut z_prev = z_func(lo, terms);
+    let mut z_prev = z_func(lo, precision);
     for i in 1..=SAMPLES {
         let t = lo + i as f64 * step;
-        let z = z_func(t, terms);
+        let z = z_func(t, precision);
         if z_prev.is_finite() && z.is_finite() && z_prev * z <= 0.0 {
             let dist = ((t_prev + t) / 2.0 - center).abs();
             if dist < best_dist {
@@ -159,7 +159,7 @@ fn resolve_interval(cli: &CliArgs) -> Result<(f64, f64, f64), String> {
         let spacing = (2.0 * std::f64::consts::PI / (est / (2.0 * std::f64::consts::PI)).ln())
             .abs()
             .max(1.0);
-        let (low, high) = bracket_near(est, 3.0 * spacing, cli.terms).ok_or_else(|| {
+        let (low, high) = bracket_near(est, 3.0 * spacing, cli.precision).ok_or_else(|| {
             format!("no zero found near the estimated location t ~= {est:.4} for n = {n}")
         })?;
         Ok((low, high, cli.tol))
@@ -203,7 +203,7 @@ fn run() -> Result<(), String> {
     let cli = parse_args(&args)?;
     let (low, high, tol) = resolve_interval(&cli)?;
 
-    let zero = find_zero(low, high, tol, cli.terms);
+    let zero = find_zero(low, high, tol, cli.precision);
     match zero {
         Some(zero_t) => {
             println!("Approximate imaginary part of the nontrivial zero: {zero_t:.10}");
@@ -224,7 +224,7 @@ fn run() -> Result<(), String> {
         return Ok(()); // EOF: treat as "no".
     }
     if input.trim().eq_ignore_ascii_case("yes") {
-        generate_d3_plot(&cli.out, low, high, zero, cli.terms)
+        generate_d3_plot(&cli.out, low, high, zero, cli.precision)
             .map_err(|e| format!("error generating plot: {e}"))?;
     }
     Ok(())
@@ -246,7 +246,7 @@ fn generate_d3_plot(
     low: f64,
     high: f64,
     zero: Option<f64>,
-    terms: u32,
+    precision: Precision,
 ) -> std::io::Result<()> {
     let mut file = File::create(path)?;
     let num_points = 200;
@@ -257,7 +257,7 @@ fn generate_d3_plot(
     let mut max_z = f64::NEG_INFINITY;
     for i in 0..num_points {
         let t = low + (i as f64) * step;
-        let z = z_func(t, terms);
+        let z = z_func(t, precision);
         min_z = min_z.min(z);
         max_z = max_z.max(z);
         data_str.push_str(&format!("  {{ t: {t}, z: {z} }},\n"));
