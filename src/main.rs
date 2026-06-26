@@ -1,8 +1,9 @@
 //! Binary executable for RiemannRho: command-line interface, computation, and visualization.
 
 use riemannrho::{
-    chebyshev_psi, count_zeros_gram, estimate_t, find_zero, gram_point, normalized_spacings,
-    nth_zero, psi_from_zeros, verify_zero_count, wigner_surmise, z_func, zeros_below, Precision,
+    chebyshev_psi, closest_zero_pairs, count_zeros_gram, estimate_t, find_zero, gram_point,
+    normalized_spacings, nth_zero, psi_from_zeros, verify_zero_count, wigner_surmise, z_func,
+    zeros_below, Precision,
 };
 use std::env;
 use std::fs::File;
@@ -27,6 +28,7 @@ USAGE:
     {program} --turing T [--high-order]
     {program} --primes X [--zeros N] [--high-order]
     {program} --spacings T [--high-order]
+    {program} --lehmer T [--high-order]
     {program}                      (interactive mode)
 
 ARGUMENTS:
@@ -47,6 +49,7 @@ OPTIONS:
     --zeros N        Number of zeros to use for --primes (default: 200).
     --spacings T     Histogram the normalized zero spacings up to T against the
                      GUE (Wigner surmise) prediction (Montgomery-Odlyzko law).
+    --lehmer T       List the closest pairs of zeros up to T (Lehmer's phenomenon).
     --digits D       Locate the zero in arbitrary precision with D decimal digits
                      (requires building with --features bigfloat; best for large t).
     --out FILE       Path for the generated plot (default: {DEFAULT_PLOT_PATH}).
@@ -61,6 +64,7 @@ EXAMPLES:
     {program} --turing 300
     {program} --primes 100.5 --zeros 300 --high-order
     {program} --spacings 2000 --high-order
+    {program} --lehmer 7100 --high-order
     {program}"
     );
 }
@@ -86,6 +90,7 @@ struct CliArgs {
     primes: Option<f64>,
     zeros: Option<usize>,
     spacings: Option<f64>,
+    lehmer: Option<f64>,
     digits: Option<usize>,
     out: String,
 }
@@ -104,6 +109,7 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         primes: None,
         zeros: None,
         spacings: None,
+        lehmer: None,
         digits: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
@@ -202,6 +208,17 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                     return Err(format!("--spacings must be > 0 (got {t})"));
                 }
                 cli.spacings = Some(t);
+            }
+            "--lehmer" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--lehmer requires a value".to_string())?;
+                let t = parse_f64(v, "--lehmer")?;
+                if t <= 0.0 {
+                    return Err(format!("--lehmer must be > 0 (got {t})"));
+                }
+                cli.lehmer = Some(t);
             }
             "--digits" => {
                 i += 1;
@@ -413,6 +430,31 @@ fn run() -> Result<(), String> {
             }
             None => println!("T={t_max} is below the first Gram interval; nothing to verify."),
         }
+        return Ok(());
+    }
+
+    // Lehmer mode: hunt the closest pairs of zeros (near-misses to RH).
+    if let Some(t_max) = cli.lehmer {
+        let pairs = closest_zero_pairs(t_max, cli.precision, 5);
+        if pairs.is_empty() {
+            println!("Too few zeros below t={t_max}; try a larger T.");
+            return Ok(());
+        }
+        println!("Closest pairs of zeros with 0 < t <= {t_max} (smallest normalized gaps):");
+        println!(
+            "{:>8}  {:>14}  {:>14}  {:>10}  {:>10}",
+            "n", "gamma_n", "gamma_n+1", "raw gap", "norm. gap"
+        );
+        for p in &pairs {
+            println!(
+                "{:>8}  {:>14.6}  {:>14.6}  {:>10.6}  {:>10.6}",
+                p.index, p.lower, p.upper, p.gap, p.normalized_gap
+            );
+        }
+        println!(
+            "\nA normalized gap << 1 is a Lehmer pair: Z(t) barely crosses zero there,\n\
+             the closest the zeta function comes to violating the Riemann hypothesis."
+        );
         return Ok(());
     }
 
