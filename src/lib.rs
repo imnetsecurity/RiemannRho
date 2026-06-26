@@ -14,6 +14,9 @@ pub mod bigfloat;
 /// Prime-distribution and primality tooling (the applied bridge to cryptography).
 pub mod primes;
 
+/// Random Matrix Theory diagnostics for an arbitrary spectrum (physics, engineering, ML).
+pub mod rmt;
+
 /// Maximum number of root-finding iterations before [`find_zero`] gives up.
 ///
 /// With `f64` a bracket can be halved at most ~60 times before reaching the limit of
