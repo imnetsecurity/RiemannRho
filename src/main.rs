@@ -1,7 +1,8 @@
 //! Binary executable for RiemannRho: command-line interface, computation, and visualization.
 
 use riemannrho::{
-    estimate_t, find_zero, gram_point, nth_zero, verify_zero_count, z_func, zeros_below, Precision,
+    count_zeros_gram, estimate_t, find_zero, gram_point, nth_zero, verify_zero_count, z_func,
+    zeros_below, Precision,
 };
 use std::env;
 use std::fs::File;
@@ -23,6 +24,7 @@ USAGE:
     {program} --count T [--high-order]
     {program} --list T [--high-order]
     {program} --gram N [--high-order]
+    {program} --turing T [--high-order]
     {program}                      (interactive mode)
 
 ARGUMENTS:
@@ -37,6 +39,7 @@ OPTIONS:
                      count theta(T)/pi + 1 (a Turing-flavored consistency check).
     --list T         Print every zero with 0 < t <= T, one per line.
     --gram N         Print the first N Gram points and check Gram's law at each.
+    --turing T       Verify the zero count up to T via Gram blocks and Rosser's rule.
     --digits D       Locate the zero in arbitrary precision with D decimal digits
                      (requires building with --features bigfloat; best for large t).
     --out FILE       Path for the generated plot (default: {DEFAULT_PLOT_PATH}).
@@ -48,6 +51,7 @@ EXAMPLES:
     {program} --count 100 --high-order
     {program} --list 50
     {program} --gram 10 --high-order
+    {program} --turing 300
     {program}"
     );
 }
@@ -69,6 +73,7 @@ struct CliArgs {
     count: Option<f64>,
     list: Option<f64>,
     gram: Option<u64>,
+    turing: Option<f64>,
     digits: Option<usize>,
     out: String,
 }
@@ -83,6 +88,7 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         count: None,
         list: None,
         gram: None,
+        turing: None,
         digits: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
@@ -134,6 +140,17 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                     .parse()
                     .map_err(|_| format!("invalid value for --gram: {v:?}"))?;
                 cli.gram = Some(n);
+            }
+            "--turing" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--turing requires a value".to_string())?;
+                let t = parse_f64(v, "--turing")?;
+                if t <= 0.0 {
+                    return Err(format!("--turing must be > 0 (got {t})"));
+                }
+                cli.turing = Some(t);
             }
             "--digits" => {
                 i += 1;
@@ -317,6 +334,33 @@ fn run() -> Result<(), String> {
             let val = sign * z_func(g, cli.precision);
             let ok = if val > 0.0 { "holds" } else { "VIOLATED" };
             println!("{k:>6}  {g:>14.6}  {val:>14.6}  {ok}");
+        }
+        return Ok(());
+    }
+
+    // Turing mode: verify the zero count up to T via Gram blocks and Rosser's rule.
+    if let Some(t_max) = cli.turing {
+        match count_zeros_gram(t_max, cli.precision) {
+            Some(r) => {
+                println!(
+                    "Gram-block zero count over (g_{}, g_{}] = ({:.4}, {:.4}]:",
+                    r.lower_index, r.upper_index, r.lower, r.upper
+                );
+                println!("  zeros found:        {}", r.count);
+                println!("  expected (Turing):  {}", r.expected);
+                println!("  Gram's-law failures: {}", r.gram_law_failures);
+                println!("  Gram blocks (len>1): {}", r.gram_blocks);
+                println!("  Rosser violations:   {}", r.rosser_violations);
+                println!(
+                    "  verified: {}",
+                    if r.verified {
+                        "yes - every Gram block resolved and the total matches N(g) exactly"
+                    } else {
+                        "NO - count mismatch or a Rosser-rule violation"
+                    }
+                );
+            }
+            None => println!("T={t_max} is below the first Gram interval; nothing to verify."),
         }
         return Ok(());
     }
