@@ -422,6 +422,57 @@ pub fn wigner_surmise(s: f64) -> f64 {
     (32.0 / (PI * PI)) * s * s * (-4.0 * s * s / PI).exp()
 }
 
+/// A pair of consecutive zeros, ranked by how close together they are (see
+/// [`closest_zero_pairs`]).
+#[derive(Clone, Copy, Debug)]
+pub struct LehmerPair {
+    /// 1-based index of the lower zero (its ordinal `n`, since scanning starts at the
+    /// first zero).
+    pub index: usize,
+    /// The lower zero `gamma_n`.
+    pub lower: f64,
+    /// The upper zero `gamma_{n+1}`.
+    pub upper: f64,
+    /// Raw gap `gamma_{n+1} - gamma_n`.
+    pub gap: f64,
+    /// Normalized gap `(theta(upper) - theta(lower)) / pi` (mean 1 over all pairs).
+    pub normalized_gap: f64,
+}
+
+/// Resolution used when hunting close pairs: high enough to separate Lehmer pairs, whose
+/// gaps can be far smaller than the default scan step.
+const LEHMER_SCAN_RESOLUTION: f64 = 40.0;
+
+/// Finds the `count` closest consecutive pairs of zeros with `0 < t <= t_max`, ranked by
+/// normalized gap — Lehmer's phenomenon.
+///
+/// Lehmer *pairs* are unusually close zeros where `Z(t)` barely crosses zero; they are the
+/// near-misses that come closest to violating the Riemann hypothesis (the famous one is
+/// near `t = 7005`, zeros #6709/#6710). Because such gaps can be much smaller than the
+/// average spacing, the scan runs at a deliberately high resolution so a close pair is not
+/// stepped over.
+pub fn closest_zero_pairs(t_max: f64, precision: Precision, count: usize) -> Vec<LehmerPair> {
+    let zeros = collect_zeros(1.0, t_max, precision, LEHMER_SCAN_RESOLUTION);
+    let mut pairs: Vec<LehmerPair> = zeros
+        .windows(2)
+        .enumerate()
+        .map(|(i, w)| LehmerPair {
+            index: i + 1,
+            lower: w[0],
+            upper: w[1],
+            gap: w[1] - w[0],
+            normalized_gap: (theta(w[1]) - theta(w[0])) / PI,
+        })
+        .collect();
+    pairs.sort_by(|a, b| {
+        a.normalized_gap
+            .partial_cmp(&b.normalized_gap)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    pairs.truncate(count);
+    pairs
+}
+
 /// The `n`th Gram point: the solution of `theta(g) = n * pi`.
 ///
 /// Gram points are defined and strictly increasing for `n >= -1` (where `theta` is past
@@ -1172,5 +1223,41 @@ mod tests {
         }
         assert!((area - 1.0).abs() < 1e-2, "integral {area}");
         assert!((mean - 1.0).abs() < 1e-2, "mean {mean}");
+    }
+
+    #[test]
+    fn closest_pairs_are_sorted_and_consistent() {
+        let pairs = closest_zero_pairs(2000.0, Precision::Order2, 5);
+        assert_eq!(pairs.len(), 5);
+        for w in pairs.windows(2) {
+            assert!(w[0].normalized_gap <= w[1].normalized_gap, "not sorted");
+        }
+        for p in &pairs {
+            assert!(p.gap > 0.0 && p.upper > p.lower && p.normalized_gap > 0.0);
+        }
+        // The closest pair is well below the mean spacing of 1.
+        assert!(
+            pairs[0].normalized_gap < 0.3,
+            "no close pair: {}",
+            pairs[0].normalized_gap
+        );
+    }
+
+    #[test]
+    fn finds_the_famous_lehmer_pair() {
+        // The classic Lehmer pair is zeros #6709/#6710 near t = 7005.06, with a tiny gap.
+        let pairs = closest_zero_pairs(7010.0, Precision::Order2, 3);
+        let top = pairs[0];
+        assert_eq!(top.index, 6709, "closest pair should be zeros #6709/#6710");
+        assert!(
+            (top.lower - 7005.0629).abs() < 0.01,
+            "lower zero {}",
+            top.lower
+        );
+        assert!(
+            top.normalized_gap < 0.05,
+            "gap not tiny: {}",
+            top.normalized_gap
+        );
     }
 }

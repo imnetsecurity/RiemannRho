@@ -75,6 +75,8 @@ Execute with arguments or via interactive mode.
   [Primes from the Zeros](#primes-from-the-zeros)).
 - `--spacings T`: Histogram the normalized zero spacings up to $T$ against the GUE
   random-matrix prediction (see [Zero Spacings & Random Matrices](#zero-spacings--random-matrices)).
+- `--lehmer T`: List the closest pairs of zeros up to $T$ — Lehmer's phenomenon (see
+  [Lehmer Pairs](#lehmer-pairs)).
 - `--digits D`: Locate the zero in arbitrary precision with $D$ decimal digits (requires
   the optional `bigfloat` feature; most useful at large $t$ — see [Arbitrary Precision](#arbitrary-precision)).
 - `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
@@ -147,6 +149,12 @@ Upon completion, the tool prints the zero approximation and asks: "Do you want a
    ./target/release/riemannrho --spacings 2000 --high-order
    ```
    Histograms the normalized gaps and overlays the GUE (Wigner) prediction.
+
+9. **Hunt Lehmer pairs (RH near-misses)**:
+   ```
+   ./target/release/riemannrho --lehmer 7100 --high-order
+   ```
+   Lists the closest pairs of zeros, surfacing the famous one near $t = 7005$.
 
 ## Arbitrary Precision
 
@@ -263,6 +271,29 @@ Empirical density vs Wigner surmise (GUE); '#' = empirical, '|' = Wigner.
  ...
 Level repulsion: 7.8% of gaps are below 0.5 (Poisson would give 39%).
 ```
+
+## Lehmer Pairs
+
+Sometimes two consecutive zeros sit *unusually* close together — so close that $Z(t)$
+barely crosses zero between them. These **Lehmer pairs** are the near-misses that come
+closest to violating the Riemann hypothesis: a hair more and the pair would pull off the
+critical line. `--lehmer T` scans up to $T$ (at high resolution, so close pairs are not
+stepped over) and lists the smallest normalized gaps.
+
+```
+./target/release/riemannrho --lehmer 7100 --high-order
+```
+```
+Closest pairs of zeros with 0 < t <= 7100 (smallest normalized gaps):
+       n         gamma_n       gamma_n+1     raw gap   norm. gap
+    6709     7005.062866     7005.100565    0.037699    0.042098
+    4765     5229.198557     5229.241811    0.043254    0.046290
+    1496     1977.173944     1977.271446    0.097503    0.089253
+    ...
+```
+
+The top hit is the classic Lehmer pair — zeros #6709 and #6710 near $t = 7005$, with a
+normalized gap of just ~0.04 against a mean of 1.
 
 ## Counting and Verification
 
