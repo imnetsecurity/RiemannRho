@@ -80,6 +80,8 @@ Execute with arguments or via interactive mode.
 - `--isprime N`: Deterministic primality test, unconditional and GRH-conditional (see
   [Cryptography: Primes & Distribution](#cryptography-primes--distribution)).
 - `--pi X`: Count primes $\le X$ and compare with $\mathrm{li}(X)$ and the RH error bound.
+- `--rmt FILE`: Classify an arbitrary spectrum by its random-matrix statistics (use
+  `zeros:T` for a built-in zeta demo) — see [Random Matrix Theory Toolkit](#random-matrix-theory-toolkit-any-spectrum).
 - `--digits D`: Locate the zero in arbitrary precision with $D$ decimal digits (requires
   the optional `bigfloat` feature; most useful at large $t$ — see [Arbitrary Precision](#arbitrary-precision)).
 - `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
@@ -164,6 +166,12 @@ Upon completion, the tool prints the zero approximation and asks: "Do you want a
     ./target/release/riemannrho --isprime 1000003
     ```
     Tests primality both unconditionally and under GRH (Bach's bound).
+
+11. **Classify any spectrum (random matrix theory)**:
+    ```
+    ./target/release/riemannrho --rmt zeros:2000 --high-order
+    ```
+    Reports $\langle r\rangle$, the ensemble, and $\Sigma^2(L)$; point `--rmt` at your own file too.
 
 ## Arbitrary Precision
 
@@ -341,6 +349,42 @@ Prime counting at x = 1000000:
   RH error bound (1/8pi)sqrt(x)ln x = 549.702
   within RH bound: yes
 ```
+
+## Random Matrix Theory Toolkit (any spectrum)
+
+The GUE statistics of the zeta zeros are an instance of a universal phenomenon, so the same
+diagnostics classify *any* real spectrum: nuclear energy levels, quantum-billiard spectra,
+MIMO channel eigenvalues, a neural network's weight singular values, a cleaned financial
+covariance spectrum. The `rmt` module asks the central question — is a spectrum
+**uncorrelated** (Poisson / integrable) or **correlated and repelling** (GOE/GUE/GSE /
+chaotic)?
+
+`--rmt FILE` reads a spectrum (whitespace-separated numbers) and reports:
+- the **spacing-ratio statistic** $\langle r\rangle$ (Atas et al.) — it needs no unfolding,
+  so it is the robust first discriminator — and the classified ensemble;
+- the **number variance** $\Sigma^2(L)$ (after polynomial unfolding) against the Poisson,
+  GOE and GUE references — the measure of *level rigidity*.
+
+The special source `zeros:T` runs the toolkit on the zeta zeros up to $T$ as a built-in demo:
+
+```
+./target/release/riemannrho --rmt zeros:2000 --high-order
+```
+```
+RMT analysis of 1517 levels from zeros:2000
+  mean spacing ratio <r> = 0.6175
+  classified as: GUE
+  reference <r>:  Poisson 0.386   GOE 0.536   GUE 0.603   GSE 0.676
+
+  Number variance Sigma^2(L) (empirical vs references):
+     L   empirical     Poisson         GOE         GUE
+   1.0      0.3100      1.0000      0.4420      0.3460
+   ...
+```
+
+The zeros land squarely on GUE, with $\Sigma^2(L)$ far below the Poisson value $L$ — the
+level rigidity that distinguishes a correlated spectrum from random noise. Point it at your
+own eigenvalues with `--rmt myspectrum.txt`.
 
 ## Counting and Verification
 

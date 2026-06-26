@@ -3,6 +3,10 @@
 use riemannrho::primes::{
     is_prime, is_prime_grh, logarithmic_integral, prime_pi, rh_prime_count_bound,
 };
+use riemannrho::rmt::{
+    analyze, number_variance, number_variance_goe, number_variance_gue, number_variance_poisson,
+    unfold, RATIO_GOE, RATIO_GSE, RATIO_GUE, RATIO_POISSON,
+};
 use riemannrho::{
     chebyshev_psi, closest_zero_pairs, count_zeros_gram, estimate_t, find_zero, gram_point,
     normalized_spacings, nth_zero, psi_from_zeros, verify_zero_count, wigner_surmise, z_func,
@@ -34,6 +38,7 @@ USAGE:
     {program} --lehmer T [--high-order]
     {program} --isprime N
     {program} --pi X
+    {program} --rmt FILE
     {program}                      (interactive mode)
 
 ARGUMENTS:
@@ -57,6 +62,8 @@ OPTIONS:
     --lehmer T       List the closest pairs of zeros up to T (Lehmer's phenomenon).
     --isprime N      Deterministic primality test (unconditional + GRH-conditional).
     --pi X           Count primes <= X and compare with li(X) and the RH error bound.
+    --rmt FILE       Classify an arbitrary spectrum (one number per line) by its
+                     random-matrix statistics: <r>, ensemble, and number variance.
     --digits D       Locate the zero in arbitrary precision with D decimal digits
                      (requires building with --features bigfloat; best for large t).
     --out FILE       Path for the generated plot (default: {DEFAULT_PLOT_PATH}).
@@ -74,6 +81,7 @@ EXAMPLES:
     {program} --lehmer 7100 --high-order
     {program} --isprime 1000003
     {program} --pi 1000000
+    {program} --rmt zeros:2000 --high-order
     {program}"
     );
 }
@@ -102,6 +110,7 @@ struct CliArgs {
     lehmer: Option<f64>,
     isprime: Option<u64>,
     pi: Option<f64>,
+    rmt: Option<String>,
     digits: Option<usize>,
     out: String,
 }
@@ -123,6 +132,7 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         lehmer: None,
         isprime: None,
         pi: None,
+        rmt: None,
         digits: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
@@ -254,6 +264,14 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                     return Err(format!("--pi must be >= 2 (got {x})"));
                 }
                 cli.pi = Some(x);
+            }
+            "--rmt" => {
+                i += 1;
+                cli.rmt = Some(
+                    args.get(i)
+                        .ok_or_else(|| "--rmt requires a file path".to_string())?
+                        .clone(),
+                );
             }
             "--digits" => {
                 i += 1;
@@ -464,6 +482,57 @@ fn run() -> Result<(), String> {
                 );
             }
             None => println!("T={t_max} is below the first Gram interval; nothing to verify."),
+        }
+        return Ok(());
+    }
+
+    // RMT mode: classify an arbitrary spectrum. `zeros:T` is a built-in demo on the zeta
+    // zeros up to T; any other value is read as a file of whitespace-separated numbers.
+    if let Some(source) = &cli.rmt {
+        let mut levels: Vec<f64> = if let Some(rest) = source.strip_prefix("zeros:") {
+            let t = parse_f64(rest, "--rmt zeros:T")?;
+            if t <= 0.0 {
+                return Err(format!("--rmt zeros:T needs T > 0 (got {t})"));
+            }
+            zeros_below(t, cli.precision)
+        } else {
+            let content = std::fs::read_to_string(source)
+                .map_err(|e| format!("could not read {source}: {e}"))?;
+            content
+                .split_whitespace()
+                .filter_map(|t| t.parse::<f64>().ok())
+                .filter(|x| x.is_finite())
+                .collect()
+        };
+        levels.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let report = analyze(&levels).ok_or("need at least 3 numeric levels to analyze")?;
+
+        println!("RMT analysis of {} levels from {source}", report.levels);
+        println!("  mean spacing ratio <r> = {:.4}", report.mean_ratio);
+        println!("  classified as: {}", report.ensemble);
+        println!(
+            "  reference <r>:  Poisson {RATIO_POISSON:.3}   GOE {RATIO_GOE:.3}   GUE {RATIO_GUE:.3}   GSE {RATIO_GSE:.3}"
+        );
+
+        let degree = (levels.len() / 30).clamp(3, 12);
+        let unfolded = unfold(&levels, degree);
+        if !unfolded.is_empty() {
+            println!("\n  Number variance Sigma^2(L) (empirical vs references):");
+            println!(
+                "  {:>4}  {:>10}  {:>10}  {:>10}  {:>10}",
+                "L", "empirical", "Poisson", "GOE", "GUE"
+            );
+            for &l in &[1.0, 2.0, 3.0, 5.0] {
+                let e = number_variance(&unfolded, l);
+                if e.is_finite() {
+                    println!(
+                        "  {l:>4.1}  {e:>10.4}  {:>10.4}  {:>10.4}  {:>10.4}",
+                        number_variance_poisson(l),
+                        number_variance_goe(l),
+                        number_variance_gue(l)
+                    );
+                }
+            }
         }
         return Ok(());
     }
