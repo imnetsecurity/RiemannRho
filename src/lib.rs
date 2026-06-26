@@ -11,6 +11,9 @@ use std::f64::consts::PI;
 #[cfg(feature = "bigfloat")]
 pub mod bigfloat;
 
+/// Prime-distribution and primality tooling (the applied bridge to cryptography).
+pub mod primes;
+
 /// Maximum number of root-finding iterations before [`find_zero`] gives up.
 ///
 /// With `f64` a bracket can be halved at most ~60 times before reaching the limit of

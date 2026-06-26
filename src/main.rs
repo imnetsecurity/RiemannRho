@@ -1,5 +1,8 @@
 //! Binary executable for RiemannRho: command-line interface, computation, and visualization.
 
+use riemannrho::primes::{
+    is_prime, is_prime_grh, logarithmic_integral, prime_pi, rh_prime_count_bound,
+};
 use riemannrho::{
     chebyshev_psi, closest_zero_pairs, count_zeros_gram, estimate_t, find_zero, gram_point,
     normalized_spacings, nth_zero, psi_from_zeros, verify_zero_count, wigner_surmise, z_func,
@@ -29,6 +32,8 @@ USAGE:
     {program} --primes X [--zeros N] [--high-order]
     {program} --spacings T [--high-order]
     {program} --lehmer T [--high-order]
+    {program} --isprime N
+    {program} --pi X
     {program}                      (interactive mode)
 
 ARGUMENTS:
@@ -50,6 +55,8 @@ OPTIONS:
     --spacings T     Histogram the normalized zero spacings up to T against the
                      GUE (Wigner surmise) prediction (Montgomery-Odlyzko law).
     --lehmer T       List the closest pairs of zeros up to T (Lehmer's phenomenon).
+    --isprime N      Deterministic primality test (unconditional + GRH-conditional).
+    --pi X           Count primes <= X and compare with li(X) and the RH error bound.
     --digits D       Locate the zero in arbitrary precision with D decimal digits
                      (requires building with --features bigfloat; best for large t).
     --out FILE       Path for the generated plot (default: {DEFAULT_PLOT_PATH}).
@@ -65,6 +72,8 @@ EXAMPLES:
     {program} --primes 100.5 --zeros 300 --high-order
     {program} --spacings 2000 --high-order
     {program} --lehmer 7100 --high-order
+    {program} --isprime 1000003
+    {program} --pi 1000000
     {program}"
     );
 }
@@ -91,6 +100,8 @@ struct CliArgs {
     zeros: Option<usize>,
     spacings: Option<f64>,
     lehmer: Option<f64>,
+    isprime: Option<u64>,
+    pi: Option<f64>,
     digits: Option<usize>,
     out: String,
 }
@@ -110,6 +121,8 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         zeros: None,
         spacings: None,
         lehmer: None,
+        isprime: None,
+        pi: None,
         digits: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
@@ -219,6 +232,28 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                     return Err(format!("--lehmer must be > 0 (got {t})"));
                 }
                 cli.lehmer = Some(t);
+            }
+            "--isprime" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--isprime requires a value".to_string())?;
+                let n: u64 = v
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("invalid value for --isprime: {v:?}"))?;
+                cli.isprime = Some(n);
+            }
+            "--pi" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--pi requires a value".to_string())?;
+                let x = parse_f64(v, "--pi")?;
+                if x < 2.0 {
+                    return Err(format!("--pi must be >= 2 (got {x})"));
+                }
+                cli.pi = Some(x);
             }
             "--digits" => {
                 i += 1;
@@ -430,6 +465,44 @@ fn run() -> Result<(), String> {
             }
             None => println!("T={t_max} is below the first Gram interval; nothing to verify."),
         }
+        return Ok(());
+    }
+
+    // Primality mode: deterministic test, both unconditional and GRH-conditional.
+    if let Some(n) = cli.isprime {
+        let verdict = is_prime(n);
+        let grh = is_prime_grh(n);
+        println!("{n} is {}", if verdict { "PRIME" } else { "COMPOSITE" });
+        println!("  deterministic Miller-Rabin (unconditional for u64): {verdict}");
+        println!(
+            "  GRH-conditional (Bach): {} after {} bases up to 2(ln n)^2 = {}",
+            grh.is_prime, grh.bases_tested, grh.bound
+        );
+        return Ok(());
+    }
+
+    // Prime-counting mode: pi(x) vs the RH main term li(x), within the RH error bound.
+    if let Some(x) = cli.pi {
+        if x > 5e8 {
+            println!("x is large; sieving up to {x:.0} may use a lot of memory.");
+        }
+        let pi = prime_pi(x as u64);
+        let li = logarithmic_integral(x);
+        let crude = x / x.ln();
+        let err = (pi as f64 - li).abs();
+        let bound = rh_prime_count_bound(x);
+        println!("Prime counting at x = {x}:");
+        println!("  pi(x)  (actual, sieved):  {pi}");
+        println!("  li(x)  (RH main term):    {li:.3}   |pi - li| = {err:.3}");
+        println!(
+            "  x/ln x (crude estimate):  {crude:.3}   |pi - x/ln x| = {:.3}",
+            (pi as f64 - crude).abs()
+        );
+        println!("  RH error bound (1/8pi)sqrt(x)ln x = {bound:.3}");
+        println!(
+            "  within RH bound: {}",
+            if err < bound { "yes" } else { "NO" }
+        );
         return Ok(());
     }
 
