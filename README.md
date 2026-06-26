@@ -68,6 +68,8 @@ Execute with arguments or via interactive mode.
   count $\theta(T)/\pi + 1$ (a Turing-flavored consistency check — see below).
 - `--list T`: Print every zero with $0 < t \le T$, one per line.
 - `--gram N`: Print the first $N$ Gram points and check Gram's law at each.
+- `--turing T`: Verify the zero count up to $T$ via Gram blocks and Rosser's rule (see
+  [Gram Points & Turing's Method](#gram-points--turings-method)).
 - `--digits D`: Locate the zero in arbitrary precision with $D$ decimal digits (requires
   the optional `bigfloat` feature; most useful at large $t$ — see [Arbitrary Precision](#arbitrary-precision)).
 - `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
@@ -150,14 +152,40 @@ For the 10000th zero this extends the result from the `f64` value `9881.10236086
 the remainder series, which extra precision cannot fix — so `--digits` matters most at large
 $t$.) The default build needs neither the feature nor the dependency.
 
-## Gram Points
+## Gram Points & Turing's Method
 
 A Gram point $g_n$ solves $\theta(g_n) = n\pi$. By *Gram's law*, $(-1)^n Z(g_n)$ is
-usually positive and each interval $[g_{n-1}, g_n)$ usually contains exactly one zero —
-the classical foundation for isolating zeros and, via Turing's method, for verifying zero
-counts rigorously. RiemannRho computes $g_n$ by Newton's method on $\theta$ and exposes
-them through `--gram`. (Gram's law has known exceptions at larger heights, governed by
-Rosser's rule, which this tool does not special-case.)
+usually positive and each interval $(g_{n-1}, g_n]$ usually contains exactly one zero — the
+classical foundation for isolating zeros. RiemannRho computes $g_n$ by Newton's method on
+$\theta$ and exposes them through `--gram`.
+
+Gram's law is not exact: it first fails near $n = 126$ ($t \approx 282$) and periodically
+thereafter. **Turing's method** copes by working with *Gram blocks* — a maximal run
+$[g_a, g_b]$ bounded by good Gram points (where Gram's law holds) with only bad ones
+inside. By *Rosser's rule*, a block spanning $b - a$ intervals contains exactly $b - a$
+zeros. Since $S$ vanishes at good Gram points, $N(g_b) - N(g_a) = b - a$ exactly, so the
+total over all blocks is the rigorous prediction.
+
+`--turing T` runs this: it forms the Gram blocks up to $T$, counts the sign changes of
+$Z$ in each, checks them against Rosser's rule, and confirms the grand total matches the
+Gram-index prediction.
+
+```
+./target/release/riemannrho --turing 300
+```
+```
+Gram-block zero count over (g_-1, g_136] = (9.6669, 298.8423]:
+  zeros found:        137
+  expected (Turing):  137
+  Gram's-law failures: 2
+  Gram blocks (len>1): 2
+  Rosser violations:   0
+  verified: yes - every Gram block resolved and the total matches N(g) exactly
+```
+
+This is the *method*, not a certified proof: rigorous bounds would need interval
+arithmetic, and Rosser's rule itself has (much higher) exceptions this does not
+special-case.
 
 ## Counting and Verification
 

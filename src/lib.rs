@@ -355,6 +355,131 @@ pub fn gram_point(n: i64) -> f64 {
     t
 }
 
+/// A Gram point is "good" when `(-1)^n Z(g_n) > 0` (Gram's law). Good Gram points are the
+/// anchors of Turing's method; runs of "bad" ones form Gram blocks.
+pub fn gram_point_is_good(n: i64, precision: Precision) -> bool {
+    let z = z_func(gram_point(n), precision);
+    let sign = if n.rem_euclid(2) == 0 { 1.0 } else { -1.0 };
+    sign * z > 0.0
+}
+
+/// Outcome of a Gram-block / Turing-method zero count (see [`count_zeros_gram`]).
+#[derive(Clone, Copy, Debug)]
+pub struct GramCount {
+    /// First good Gram point used as the lower anchor (`g_{lower_index}`).
+    pub lower: f64,
+    /// Last good Gram point not exceeding `t_max` (`g_{upper_index}`).
+    pub upper: f64,
+    pub lower_index: i64,
+    pub upper_index: i64,
+    /// Zeros actually found in `(lower, upper]`.
+    pub count: usize,
+    /// Zeros predicted by the Gram indices: `upper_index - lower_index`.
+    pub expected: usize,
+    /// Gram points in `[lower, upper]` that violate Gram's law.
+    pub gram_law_failures: usize,
+    /// Non-trivial Gram blocks (spanning two or more Gram intervals).
+    pub gram_blocks: usize,
+    /// Gram blocks whose zero count differs from their length (Rosser's-rule violations).
+    pub rosser_violations: usize,
+    /// `true` when every block satisfied Rosser's rule and the total matched `expected`.
+    pub verified: bool,
+}
+
+/// Counts nontrivial zeros between consecutive good Gram points using the classical
+/// Gram-block / Turing method, rather than a blind scan.
+///
+/// Gram's law — `(-1)^n Z(g_n) > 0`, with one zero per Gram interval — usually holds, but
+/// fails periodically (first near `n = 126`). Turing's method copes by working with *Gram
+/// blocks*: a maximal run `[g_a, g_b]` bounded by good Gram points with only bad ones
+/// inside. By *Rosser's rule* a block of `b - a` intervals contains exactly `b - a` zeros.
+/// This routine forms those blocks, counts the sign changes of `Z` in each, checks them
+/// against Rosser's rule, and confirms the total equals `upper_index - lower_index` — the
+/// rigorous prediction `N(g_b) - N(g_a)` since `S` vanishes at good Gram points.
+///
+/// Returns `None` when `t_max` is below the first Gram interval. Note this is the *method*,
+/// not a certified proof: rigorous bounds would require interval arithmetic, and Rosser's
+/// rule itself has (much higher) exceptions this does not special-case.
+pub fn count_zeros_gram(t_max: f64, precision: Precision) -> Option<GramCount> {
+    if !t_max.is_finite() || t_max < gram_point(0) {
+        return None;
+    }
+
+    // Collect Gram nodes (index, g_n, is_good) with g_n <= t_max, starting at n = -1.
+    let mut nodes: Vec<(i64, f64, bool)> = Vec::new();
+    let mut n: i64 = -1;
+    loop {
+        let g = gram_point(n);
+        if g > t_max {
+            break;
+        }
+        nodes.push((n, g, gram_point_is_good(n, precision)));
+        n += 1;
+    }
+
+    // Turing's method anchors counts at good Gram points: trim bad ones off both ends.
+    while nodes.last().is_some_and(|&(_, _, good)| !good) {
+        nodes.pop();
+    }
+    while nodes.first().is_some_and(|&(_, _, good)| !good) {
+        nodes.remove(0);
+    }
+    if nodes.len() < 2 {
+        return None;
+    }
+
+    let (lower_index, lower, _) = nodes[0];
+    let (upper_index, upper, _) = *nodes.last().unwrap();
+
+    let mut count = 0usize;
+    let mut gram_blocks = 0usize;
+    let mut rosser_violations = 0usize;
+
+    // Walk the good Gram points; each consecutive pair bounds one Gram block.
+    let good: Vec<(i64, f64)> = nodes
+        .iter()
+        .filter(|&&(_, _, g)| g)
+        .map(|&(idx, gp, _)| (idx, gp))
+        .collect();
+    for pair in good.windows(2) {
+        let (a_idx, a_g) = pair[0];
+        let (b_idx, b_g) = pair[1];
+        let length = (b_idx - a_idx) as usize;
+
+        // Count sign changes of Z in the block, at a finer resolution since anomalies
+        // (close zero pairs) cluster where Gram's law fails.
+        let mut found = 0usize;
+        scan_zeros(a_g, b_g, precision, 2.0 * DEFAULT_SCAN_RESOLUTION, |_| {
+            found += 1;
+            true
+        });
+
+        count += found;
+        if length >= 2 {
+            gram_blocks += 1;
+        }
+        if found != length {
+            rosser_violations += 1;
+        }
+    }
+
+    let gram_law_failures = nodes.iter().filter(|&&(_, _, g)| !g).count();
+    let expected = (upper_index - lower_index) as usize;
+
+    Some(GramCount {
+        lower,
+        upper,
+        lower_index,
+        upper_index,
+        count,
+        expected,
+        gram_law_failures,
+        gram_blocks,
+        rosser_violations,
+        verified: count == expected && rosser_violations == 0,
+    })
+}
+
 /// Default number of scan samples per average zero spacing.
 const DEFAULT_SCAN_RESOLUTION: f64 = 10.0;
 
@@ -738,5 +863,49 @@ mod tests {
                 "Gram's law violated at n={n}"
             );
         }
+    }
+
+    #[test]
+    fn gram_count_is_verified_and_matches_a_blind_scan() {
+        for &t in &[50.0, 100.0, 300.0] {
+            let gc = count_zeros_gram(t, Precision::Order2).expect("range above first Gram point");
+            assert!(
+                gc.verified,
+                "T={t}: count {} vs expected {} ({} Rosser violations)",
+                gc.count, gc.expected, gc.rosser_violations
+            );
+            // The Gram-block count must agree with an independent parallel scan over the
+            // same (lower, upper] range.
+            let scanned = collect_zeros(
+                gc.lower,
+                gc.upper,
+                Precision::Order2,
+                DEFAULT_SCAN_RESOLUTION,
+            )
+            .len();
+            assert_eq!(
+                scanned, gc.count,
+                "T={t}: blind scan {scanned} vs gram {}",
+                gc.count
+            );
+        }
+    }
+
+    #[test]
+    fn gram_count_resolves_gram_blocks_via_rosser() {
+        // Gram's law first fails near n = 126 (t ~ 282), so scanning to 300 must form a
+        // Gram block that Rosser's rule still resolves to the correct, verified count.
+        let gc = count_zeros_gram(300.0, Precision::Order2).unwrap();
+        assert!(
+            gc.gram_law_failures > 0,
+            "expected a Gram's-law failure below 300"
+        );
+        assert!(gc.gram_blocks > 0, "expected a non-trivial Gram block");
+        assert!(gc.rosser_violations == 0 && gc.verified);
+    }
+
+    #[test]
+    fn gram_count_rejects_tiny_range() {
+        assert!(count_zeros_gram(5.0, Precision::Base).is_none());
     }
 }
