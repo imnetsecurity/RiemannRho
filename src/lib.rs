@@ -121,6 +121,15 @@ fn nth_derivative<F: Fn(f64) -> f64 + Copy>(f: F, x: f64, n: u32, h: f64) -> f64
 ///
 /// # Returns
 /// Z(t) value. Returns `NaN` for non-positive or non-finite `t`.
+///
+/// # Examples
+/// ```
+/// use riemannrho::{z_func, Precision};
+/// // Z(t) is real and changes sign across the first zero near t = 14.1347.
+/// let left = z_func(14.0, Precision::Order2);
+/// let right = z_func(14.3, Precision::Order2);
+/// assert!(left * right < 0.0);
+/// ```
 pub fn z_func(t: f64, precision: Precision) -> f64 {
     if !t.is_finite() || t <= 0.0 {
         return f64::NAN;
@@ -188,6 +197,15 @@ pub fn z_func(t: f64, precision: Precision) -> f64 {
 /// # Returns
 /// `Some(t)` if a sign change is bracketed, `None` if the inputs are invalid or there
 /// is no sign change in the interval.
+///
+/// # Examples
+/// ```
+/// use riemannrho::{find_zero, Precision};
+/// let z = find_zero(14.0, 15.0, 1e-10, Precision::Order2).unwrap();
+/// assert!((z - 14.134725).abs() < 1e-3);
+/// // No sign change in [5, 6], so nothing is bracketed.
+/// assert!(find_zero(5.0, 6.0, 1e-10, Precision::Order2).is_none());
+/// ```
 pub fn find_zero(a: f64, b: f64, tol: f64, precision: Precision) -> Option<f64> {
     // Reject invalid input outright. Without this an NaN bound (e.g. from a bad nth
     // estimate) made an unguarded loop spin forever, because `(b - a) < tol` is never
@@ -320,6 +338,13 @@ pub fn expected_zero_count(t: f64) -> f64 {
 ///
 /// # Returns
 /// `g_n`, or `NaN` for `n < -1`.
+///
+/// # Examples
+/// ```
+/// use riemannrho::gram_point;
+/// assert!((gram_point(0) - 17.845600).abs() < 1e-4);
+/// assert!(gram_point(-2).is_nan());
+/// ```
 pub fn gram_point(n: i64) -> f64 {
     if n < -1 {
         return f64::NAN;
@@ -400,6 +425,14 @@ pub struct GramCount {
 /// Returns `None` when `t_max` is below the first Gram interval. Note this is the *method*,
 /// not a certified proof: rigorous bounds would require interval arithmetic, and Rosser's
 /// rule itself has (much higher) exceptions this does not special-case.
+///
+/// # Examples
+/// ```
+/// use riemannrho::{count_zeros_gram, Precision};
+/// let report = count_zeros_gram(100.0, Precision::Order2).unwrap();
+/// assert!(report.verified);
+/// assert_eq!(report.count, report.expected);
+/// ```
 pub fn count_zeros_gram(t_max: f64, precision: Precision) -> Option<GramCount> {
     if !t_max.is_finite() || t_max < gram_point(0) {
         return None;
@@ -573,12 +606,26 @@ fn collect_zeros(start: f64, end: f64, precision: Precision, resolution: f64) ->
 /// Cost is `O(t_max * sqrt(t_max))`; the scan is parallelized across CPU cores for large
 /// `t_max`, but this is still intended for exploration over moderate heights rather than
 /// astronomically large `t_max`.
+///
+/// # Examples
+/// ```
+/// use riemannrho::{zeros_below, Precision};
+/// // Five zeros lie below t = 35.
+/// assert_eq!(zeros_below(35.0, Precision::Order2).len(), 5);
+/// ```
 pub fn zeros_below(t_max: f64, precision: Precision) -> Vec<f64> {
     collect_zeros(1.0, t_max, precision, DEFAULT_SCAN_RESOLUTION)
 }
 
 /// Counts the nontrivial zeros with imaginary part in `(0, t_max]` found on the
 /// critical line. Compare with `round(`[`expected_zero_count`]`(t_max))`.
+///
+/// # Examples
+/// ```
+/// use riemannrho::{count_zeros_below, Precision};
+/// // There are 10 nontrivial zeros with 0 < t <= 50.
+/// assert_eq!(count_zeros_below(50.0, Precision::Order2), 10);
+/// ```
 pub fn count_zeros_below(t_max: f64, precision: Precision) -> usize {
     collect_zeros(1.0, t_max, precision, DEFAULT_SCAN_RESOLUTION).len()
 }
@@ -655,6 +702,13 @@ pub fn verify_zero_count(t_max: f64, precision: Precision) -> CountReport {
 ///
 /// # Returns
 /// `Some(t_n)`, or `None` if `n == 0` or the location could not be estimated.
+///
+/// # Examples
+/// ```
+/// use riemannrho::{nth_zero, Precision};
+/// assert!((nth_zero(1, Precision::Order2).unwrap() - 14.134725).abs() < 1e-3);
+/// assert_eq!(nth_zero(0, Precision::Order2), None);
+/// ```
 pub fn nth_zero(n: u64, precision: Precision) -> Option<f64> {
     if n == 0 {
         return None;
@@ -803,6 +857,24 @@ mod tests {
             );
         }
         assert_eq!(nth_zero(0, Precision::Base), None);
+    }
+
+    #[test]
+    fn nth_zero_matches_higher_reference_zeros() {
+        // Validate the whole pipeline well above the first handful of zeros, where the
+        // main sum has several terms (nu > 1). Ordinates from Odlyzko's tables.
+        let references = [
+            (10u64, 49.7738324777),
+            (50, 143.1118458076),
+            (100, 236.5242296658),
+        ];
+        for (n, want) in references {
+            let got = nth_zero(n, Precision::Order2).unwrap();
+            assert!(
+                (got - want).abs() < 1e-5,
+                "zero #{n}: got {got}, expected ~{want}"
+            );
+        }
     }
 
     #[test]
