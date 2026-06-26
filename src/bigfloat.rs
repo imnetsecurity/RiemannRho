@@ -77,17 +77,57 @@ struct SumTables {
 
 impl SumTables {
     fn build(nu_max: usize, prec: usize) -> Self {
+        if nu_max == 0 {
+            return SumTables {
+                ln_k: Vec::new(),
+                inv_sqrt_k: Vec::new(),
+            };
+        }
         let neg_half = int(-1, prec) / int(2, prec);
-        let mut ln_k = Vec::with_capacity(nu_max);
-        let mut inv_sqrt_k = Vec::with_capacity(nu_max);
-        for k in 1..=nu_max {
+        let one = |k: usize| -> (DBig, DBig) {
             let l = int(k as i64, prec).ln();
             let inv = (&l * &neg_half).exp();
-            ln_k.push(l);
-            inv_sqrt_k.push(inv);
+            (l, inv)
+        };
+
+        let threads = worker_threads();
+        let parts: Vec<Vec<(DBig, DBig)>> = if threads <= 1 || nu_max < 64 {
+            vec![(1..=nu_max).map(&one).collect()]
+        } else {
+            // Building the table is itself nu_max logarithms/exponentials; parallelize it
+            // so it does not dominate once the secant root finder needs few iterations.
+            let chunk = nu_max.div_ceil(threads);
+            std::thread::scope(|s| {
+                let mut handles = Vec::new();
+                let mut start = 1;
+                while start <= nu_max {
+                    let end = (start + chunk - 1).min(nu_max);
+                    let one = &one;
+                    handles.push(s.spawn(move || (start..=end).map(one).collect::<Vec<_>>()));
+                    start = end + 1;
+                }
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            })
+        };
+
+        let mut ln_k = Vec::with_capacity(nu_max);
+        let mut inv_sqrt_k = Vec::with_capacity(nu_max);
+        for part in parts {
+            for (l, inv) in part {
+                ln_k.push(l);
+                inv_sqrt_k.push(inv);
+            }
         }
         SumTables { ln_k, inv_sqrt_k }
     }
+}
+
+/// Number of worker threads to use for the parallel table build and main sum.
+fn worker_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(8)
 }
 
 /// `2 * sum_{k=1}^{nu} cos(theta_t - t*ln(k)) / sqrt(k)`, the Riemann-Siegel main sum.
@@ -107,10 +147,7 @@ fn main_sum(t: &DBig, theta_t: &DBig, nu: usize, prec: usize, tables: &SumTables
         arg.cos() * &tables.inv_sqrt_k[k - 1]
     };
 
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(8);
+    let threads = worker_threads();
     if threads <= 1 || nu < 64 {
         let mut acc = int(0, prec);
         for k in 1..=nu {
@@ -239,27 +276,45 @@ pub fn find_zero(a: f64, b: f64, tol: f64, prec: usize, precision: Precision) ->
 
     let mut lo = a;
     let mut hi = b;
-    let z_lo = z_eval(lo, prec, precision, &tables);
-    let z_hi = z_eval(hi, prec, precision, &tables);
-    if !z_lo.is_finite() || !z_hi.is_finite() || z_lo * z_hi > 0.0 {
+    let mut f_lo = z_eval(lo, prec, precision, &tables);
+    let mut f_hi = z_eval(hi, prec, precision, &tables);
+    if !f_lo.is_finite() || !f_hi.is_finite() || f_lo * f_hi > 0.0 {
         return None;
     }
-    let mut s_lo = z_lo.signum();
+
+    // Safeguarded secant: a false-position step when it lands comfortably inside the
+    // bracket, otherwise bisection. Each big-precision evaluation is expensive, so the
+    // ~6-10 secant steps this needs are a large saving over ~33 bisection steps.
+    let mut force_bisect = false;
     for _ in 0..200 {
-        let mid = lo + (hi - lo) / 2.0;
-        if (hi - lo) < tol {
-            return Some(mid);
+        let width = hi - lo;
+        if width < tol {
+            return Some(lo + width / 2.0);
         }
-        let z_mid = z_eval(mid, prec, precision, &tables);
-        if z_mid == 0.0 {
-            return Some(mid);
-        }
-        if s_lo * z_mid.signum() > 0.0 {
-            lo = mid;
-            s_lo = z_mid.signum();
+
+        let mid = if force_bisect {
+            lo + width / 2.0
         } else {
-            hi = mid;
+            let s = lo - f_lo * (hi - lo) / (f_hi - f_lo);
+            if s.is_finite() && s > lo + 0.05 * width && s < hi - 0.05 * width {
+                s
+            } else {
+                lo + width / 2.0
+            }
+        };
+
+        let f_mid = z_eval(mid, prec, precision, &tables);
+        if f_mid == 0.0 {
+            return Some(mid);
         }
+        if f_lo * f_mid < 0.0 {
+            hi = mid;
+            f_hi = f_mid;
+        } else {
+            lo = mid;
+            f_lo = f_mid;
+        }
+        force_bisect = (hi - lo) > 0.5 * width;
     }
     Some(lo + (hi - lo) / 2.0)
 }
