@@ -77,6 +77,9 @@ Execute with arguments or via interactive mode.
   random-matrix prediction (see [Zero Spacings & Random Matrices](#zero-spacings--random-matrices)).
 - `--lehmer T`: List the closest pairs of zeros up to $T$ — Lehmer's phenomenon (see
   [Lehmer Pairs](#lehmer-pairs)).
+- `--isprime N`: Deterministic primality test, unconditional and GRH-conditional (see
+  [Cryptography: Primes & Distribution](#cryptography-primes--distribution)).
+- `--pi X`: Count primes $\le X$ and compare with $\mathrm{li}(X)$ and the RH error bound.
 - `--digits D`: Locate the zero in arbitrary precision with $D$ decimal digits (requires
   the optional `bigfloat` feature; most useful at large $t$ — see [Arbitrary Precision](#arbitrary-precision)).
 - `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
@@ -155,6 +158,12 @@ Upon completion, the tool prints the zero approximation and asks: "Do you want a
    ./target/release/riemannrho --lehmer 7100 --high-order
    ```
    Lists the closest pairs of zeros, surfacing the famous one near $t = 7005$.
+
+10. **Deterministic primality test**:
+    ```
+    ./target/release/riemannrho --isprime 1000003
+    ```
+    Tests primality both unconditionally and under GRH (Bach's bound).
 
 ## Arbitrary Precision
 
@@ -294,6 +303,44 @@ Closest pairs of zeros with 0 < t <= 7100 (smallest normalized gaps):
 
 The top hit is the classic Lehmer pair — zeros #6709 and #6710 near $t = 7005$, with a
 normalized gap of just ~0.04 against a mean of 1.
+
+## Cryptography: Primes & Distribution
+
+The Riemann hypothesis is **not** a cryptographic primitive — the zeros are not keys, and
+RSA's security rests on factoring, not on $\zeta$. The genuine, practical link runs through
+the **primes**, and this module exposes both sides of it.
+
+**Deterministic primality** (the basis of RSA/DH key generation). Under the *Generalized*
+Riemann Hypothesis, a composite $n$ always has a Miller–Rabin witness below $2(\ln n)^2$
+(Bach), making Miller–Rabin a *deterministic* test. `--isprime N` reports both this
+GRH-conditional test and the **unconditional** verdict (a fixed witness set is provably
+sufficient for all 64-bit integers — what you'd actually use in practice).
+
+```
+./target/release/riemannrho --isprime 1000003
+```
+```
+1000003 is PRIME
+  deterministic Miller-Rabin (unconditional for u64): true
+  GRH-conditional (Bach): true after 380 bases up to 2(ln n)^2 = 381
+```
+
+**Prime distribution** (the reasoning behind key sizes and prime density). RH is exactly
+the statement that the primes track $\mathrm{li}(x)$ tightly: Schoenfeld's bound says
+$|\pi(x) - \mathrm{li}(x)| < \frac{1}{8\pi}\sqrt{x}\,\ln x$. `--pi X` shows the actual error
+sitting inside that bound.
+
+```
+./target/release/riemannrho --pi 1000000
+```
+```
+Prime counting at x = 1000000:
+  pi(x)  (actual, sieved):  78498
+  li(x)  (RH main term):    78627.549   |pi - li| = 129.549
+  x/ln x (crude estimate):  72382.414   |pi - x/ln x| = 6115.586
+  RH error bound (1/8pi)sqrt(x)ln x = 549.702
+  within RH bound: yes
+```
 
 ## Counting and Verification
 
