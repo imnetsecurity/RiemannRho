@@ -1,8 +1,8 @@
 //! Binary executable for RiemannRho: command-line interface, computation, and visualization.
 
 use riemannrho::{
-    chebyshev_psi, count_zeros_gram, estimate_t, find_zero, gram_point, nth_zero, psi_from_zeros,
-    verify_zero_count, z_func, zeros_below, Precision,
+    chebyshev_psi, count_zeros_gram, estimate_t, find_zero, gram_point, normalized_spacings,
+    nth_zero, psi_from_zeros, verify_zero_count, wigner_surmise, z_func, zeros_below, Precision,
 };
 use std::env;
 use std::fs::File;
@@ -26,6 +26,7 @@ USAGE:
     {program} --gram N [--high-order]
     {program} --turing T [--high-order]
     {program} --primes X [--zeros N] [--high-order]
+    {program} --spacings T [--high-order]
     {program}                      (interactive mode)
 
 ARGUMENTS:
@@ -44,6 +45,8 @@ OPTIONS:
     --primes X       Reconstruct the prime-power count psi(X) from the zeros via
                      Riemann's explicit formula (see also --zeros).
     --zeros N        Number of zeros to use for --primes (default: 200).
+    --spacings T     Histogram the normalized zero spacings up to T against the
+                     GUE (Wigner surmise) prediction (Montgomery-Odlyzko law).
     --digits D       Locate the zero in arbitrary precision with D decimal digits
                      (requires building with --features bigfloat; best for large t).
     --out FILE       Path for the generated plot (default: {DEFAULT_PLOT_PATH}).
@@ -57,6 +60,7 @@ EXAMPLES:
     {program} --gram 10 --high-order
     {program} --turing 300
     {program} --primes 100.5 --zeros 300 --high-order
+    {program} --spacings 2000 --high-order
     {program}"
     );
 }
@@ -81,6 +85,7 @@ struct CliArgs {
     turing: Option<f64>,
     primes: Option<f64>,
     zeros: Option<usize>,
+    spacings: Option<f64>,
     digits: Option<usize>,
     out: String,
 }
@@ -98,6 +103,7 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         turing: None,
         primes: None,
         zeros: None,
+        spacings: None,
         digits: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
@@ -185,6 +191,17 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                     return Err("--zeros must be >= 1".to_string());
                 }
                 cli.zeros = Some(n);
+            }
+            "--spacings" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--spacings requires a value".to_string())?;
+                let t = parse_f64(v, "--spacings")?;
+                if t <= 0.0 {
+                    return Err(format!("--spacings must be > 0 (got {t})"));
+                }
+                cli.spacings = Some(t);
             }
             "--digits" => {
                 i += 1;
@@ -396,6 +413,56 @@ fn run() -> Result<(), String> {
             }
             None => println!("T={t_max} is below the first Gram interval; nothing to verify."),
         }
+        return Ok(());
+    }
+
+    // Spacing-statistics mode: compare normalized zero gaps with the GUE prediction.
+    if let Some(t_max) = cli.spacings {
+        let zeros = zeros_below(t_max, cli.precision);
+        let spac = normalized_spacings(&zeros);
+        if spac.len() < 10 {
+            println!("Too few zeros below t={t_max} for statistics; try a larger T.");
+            return Ok(());
+        }
+        let n = spac.len();
+        let mean = spac.iter().sum::<f64>() / n as f64;
+        let frac_below = |t: f64| spac.iter().filter(|&&x| x < t).count() as f64 / n as f64;
+
+        const BINS: usize = 15;
+        const WIDTH: f64 = 0.2;
+        let mut counts = [0usize; BINS];
+        for &x in &spac {
+            let b = (x / WIDTH) as usize;
+            if b < BINS {
+                counts[b] += 1;
+            }
+        }
+
+        println!("Normalized spacings of {n} zeros with 0 < t <= {t_max}  (mean = {mean:.4})");
+        println!("Empirical density vs Wigner surmise (GUE); '#' = empirical, '|' = Wigner.\n");
+        println!("{:>5}  {:>9}  {:>7}", "s", "empirical", "Wigner");
+        for (i, &c) in counts.iter().enumerate() {
+            let center = (i as f64 + 0.5) * WIDTH;
+            let emp = c as f64 / (n as f64 * WIDTH);
+            let wig = wigner_surmise(center);
+            let emp_bar = (emp * 40.0).round() as usize;
+            let wig_pos = (wig * 40.0).round() as usize;
+            let mut row = vec![b' '; emp_bar.max(wig_pos) + 1];
+            for cell in row.iter_mut().take(emp_bar) {
+                *cell = b'#';
+            }
+            if wig_pos < row.len() {
+                row[wig_pos] = b'|';
+            }
+            println!(
+                "{center:>5.2}  {emp:>9.4}  {wig:>7.4}  {}",
+                String::from_utf8(row).unwrap()
+            );
+        }
+        println!(
+            "\nLevel repulsion: {:.1}% of gaps are below 0.5 (Poisson would give 39%).",
+            100.0 * frac_below(0.5)
+        );
         return Ok(());
     }
 

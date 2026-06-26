@@ -393,6 +393,35 @@ pub fn psi_from_zeros(x: f64, gammas: &[f64]) -> f64 {
     x - sqrt_x * oscillation - (2.0 * PI).ln() - 0.5 * (1.0 - x.powi(-2)).ln()
 }
 
+/// Normalized ("unfolded") gaps between consecutive zeros, rescaled so the mean spacing
+/// is 1.
+///
+/// Raw gaps shrink with height because the zero density grows like `ln(t)/2pi`; dividing
+/// out that local density makes spacings at different heights comparable. Unfolding via the
+/// smooth count `theta/pi`, the gap between consecutive zeros `a < b` becomes
+/// `(theta(b) - theta(a)) / pi`, whose mean over many zeros is 1.
+///
+/// `zeros` must be sorted ascending (as returned by [`zeros_below`]); the result has one
+/// fewer element.
+pub fn normalized_spacings(zeros: &[f64]) -> Vec<f64> {
+    zeros
+        .windows(2)
+        .map(|w| (theta(w[1]) - theta(w[0])) / PI)
+        .collect()
+}
+
+/// The Wigner surmise for GUE nearest-neighbor spacings:
+/// `P(s) = (32/pi^2) s^2 exp(-4 s^2/pi)`.
+///
+/// By the Montgomery-Odlyzko law the normalized spacings of the zeta zeros follow the
+/// eigenvalue statistics of the Gaussian Unitary Ensemble of random matrices, of which
+/// this is the standard closed-form approximation. The defining feature is *level
+/// repulsion*: `P(0) = 0`, in sharp contrast to a random (Poisson) sequence's
+/// `P(s) = e^{-s}` with `P(0) = 1`.
+pub fn wigner_surmise(s: f64) -> f64 {
+    (32.0 / (PI * PI)) * s * s * (-4.0 * s * s / PI).exp()
+}
+
 /// The `n`th Gram point: the solution of `theta(g) = n * pi`.
 ///
 /// Gram points are defined and strictly increasing for `n >= -1` (where `theta` is past
@@ -1093,5 +1122,55 @@ mod tests {
             err(300),
             err(20)
         );
+    }
+
+    #[test]
+    fn normalized_spacings_have_unit_mean() {
+        let zeros = zeros_below(1500.0, Precision::Order2);
+        let spac = normalized_spacings(&zeros);
+        assert!(
+            spac.len() > 1000,
+            "expected many spacings, got {}",
+            spac.len()
+        );
+        let mean = spac.iter().sum::<f64>() / spac.len() as f64;
+        assert!((mean - 1.0).abs() < 0.05, "mean normalized spacing {mean}");
+    }
+
+    #[test]
+    fn zeros_exhibit_gue_level_repulsion() {
+        // The Montgomery-Odlyzko law: spacings follow GUE statistics, which repel — far
+        // fewer tiny gaps than a Poisson process (where 1 - e^-0.5 = 39% fall below 0.5).
+        let zeros = zeros_below(1500.0, Precision::Order2);
+        let spac = normalized_spacings(&zeros);
+        let n = spac.len() as f64;
+        let frac_below = |t: f64| spac.iter().filter(|&&x| x < t).count() as f64 / n;
+        assert!(
+            frac_below(0.5) < 0.25,
+            "too many small gaps: {}",
+            frac_below(0.5)
+        );
+        assert!(
+            frac_below(0.1) < 0.03,
+            "unexpected near-coincidences: {}",
+            frac_below(0.1)
+        );
+    }
+
+    #[test]
+    fn wigner_surmise_is_normalized_and_repels() {
+        // P(0) = 0 (level repulsion), and the distribution integrates to 1 with mean 1.
+        assert_eq!(wigner_surmise(0.0), 0.0);
+        let (mut area, mut mean) = (0.0, 0.0);
+        let h = 1e-3;
+        let mut s = h / 2.0;
+        while s < 6.0 {
+            let p = wigner_surmise(s);
+            area += p * h;
+            mean += s * p * h;
+            s += h;
+        }
+        assert!((area - 1.0).abs() < 1e-2, "integral {area}");
+        assert!((mean - 1.0).abs() < 1e-2, "mean {mean}");
     }
 }

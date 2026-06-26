@@ -73,6 +73,8 @@ Execute with arguments or via interactive mode.
 - `--primes X` (with optional `--zeros N`): Reconstruct the prime-power count $\psi(X)$
   from the zeros via Riemann's explicit formula (see
   [Primes from the Zeros](#primes-from-the-zeros)).
+- `--spacings T`: Histogram the normalized zero spacings up to $T$ against the GUE
+  random-matrix prediction (see [Zero Spacings & Random Matrices](#zero-spacings--random-matrices)).
 - `--digits D`: Locate the zero in arbitrary precision with $D$ decimal digits (requires
   the optional `bigfloat` feature; most useful at large $t$ — see [Arbitrary Precision](#arbitrary-precision)).
 - `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
@@ -139,6 +141,12 @@ Upon completion, the tool prints the zero approximation and asks: "Do you want a
    ./target/release/riemannrho --primes 20.5 --high-order
    ```
    Rebuilds $\psi(20.5)$ from the first 200 zeros and compares with the sieved value.
+
+8. **Zero spacings vs random-matrix statistics**:
+   ```
+   ./target/release/riemannrho --spacings 2000 --high-order
+   ```
+   Histograms the normalized gaps and overlays the GUE (Wigner) prediction.
 
 ## Arbitrary Precision
 
@@ -225,6 +233,36 @@ Reconstructing psi(x) = sum over prime powers p^k <= x of ln(p)
 The truncated series converges slowly and oscillates (Gibbs-like) near prime powers, so at
 any single $x$ more zeros do not always help — but on average the reconstruction sharpens
 as $N$ grows, most cleanly away from the jumps.
+
+## Zero Spacings & Random Matrices
+
+One of the most beautiful discoveries in modern mathematics (Montgomery–Odlyzko): the
+spacings between zeta zeros behave statistically like the eigenvalue spacings of large
+**random matrices** from the Gaussian Unitary Ensemble (GUE) — the same statistics that
+govern energy levels in quantum chaos.
+
+Because the zero density grows with height, `--spacings T` first *unfolds* the zeros
+(rescaling so the mean gap is 1), then histograms the normalized gaps against the **Wigner
+surmise** $P(s) = \frac{32}{\pi^2}s^2 e^{-4s^2/\pi}$. The signature is *level repulsion*:
+$P(0) = 0$, so tiny gaps are rare — utterly unlike a random (Poisson) sequence.
+
+```
+./target/release/riemannrho --spacings 2000 --high-order
+```
+```
+Normalized spacings of 1516 zeros with 0 < t <= 2000  (mean = 1.0001)
+Empirical density vs Wigner surmise (GUE); '#' = empirical, '|' = Wigner.
+
+    s  empirical   Wigner
+ 0.10     0.0132   0.0320  #|
+ 0.30     0.1979   0.2602  ########  |
+ 0.50     0.4716   0.5896  ###################     |
+ 0.70     0.9796   0.8513  ##################################|####
+ 0.90     1.0587   0.9363  #####################################|####
+ 1.10     0.8641   0.8405  ##################################|
+ ...
+Level repulsion: 7.8% of gaps are below 0.5 (Poisson would give 39%).
+```
 
 ## Counting and Verification
 
