@@ -1,8 +1,8 @@
 //! Binary executable for RiemannRho: command-line interface, computation, and visualization.
 
 use riemannrho::{
-    count_zeros_gram, estimate_t, find_zero, gram_point, nth_zero, verify_zero_count, z_func,
-    zeros_below, Precision,
+    chebyshev_psi, count_zeros_gram, estimate_t, find_zero, gram_point, nth_zero, psi_from_zeros,
+    verify_zero_count, z_func, zeros_below, Precision,
 };
 use std::env;
 use std::fs::File;
@@ -25,6 +25,7 @@ USAGE:
     {program} --list T [--high-order]
     {program} --gram N [--high-order]
     {program} --turing T [--high-order]
+    {program} --primes X [--zeros N] [--high-order]
     {program}                      (interactive mode)
 
 ARGUMENTS:
@@ -40,6 +41,9 @@ OPTIONS:
     --list T         Print every zero with 0 < t <= T, one per line.
     --gram N         Print the first N Gram points and check Gram's law at each.
     --turing T       Verify the zero count up to T via Gram blocks and Rosser's rule.
+    --primes X       Reconstruct the prime-power count psi(X) from the zeros via
+                     Riemann's explicit formula (see also --zeros).
+    --zeros N        Number of zeros to use for --primes (default: 200).
     --digits D       Locate the zero in arbitrary precision with D decimal digits
                      (requires building with --features bigfloat; best for large t).
     --out FILE       Path for the generated plot (default: {DEFAULT_PLOT_PATH}).
@@ -52,6 +56,7 @@ EXAMPLES:
     {program} --list 50
     {program} --gram 10 --high-order
     {program} --turing 300
+    {program} --primes 100.5 --zeros 300 --high-order
     {program}"
     );
 }
@@ -74,6 +79,8 @@ struct CliArgs {
     list: Option<f64>,
     gram: Option<u64>,
     turing: Option<f64>,
+    primes: Option<f64>,
+    zeros: Option<usize>,
     digits: Option<usize>,
     out: String,
 }
@@ -89,6 +96,8 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         list: None,
         gram: None,
         turing: None,
+        primes: None,
+        zeros: None,
         digits: None,
         out: DEFAULT_PLOT_PATH.to_string(),
     };
@@ -151,6 +160,31 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                     return Err(format!("--turing must be > 0 (got {t})"));
                 }
                 cli.turing = Some(t);
+            }
+            "--primes" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--primes requires a value".to_string())?;
+                let x = parse_f64(v, "--primes")?;
+                if x <= 1.0 {
+                    return Err(format!("--primes must be > 1 (got {x})"));
+                }
+                cli.primes = Some(x);
+            }
+            "--zeros" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--zeros requires a value".to_string())?;
+                let n: usize = v
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("invalid value for --zeros: {v:?}"))?;
+                if n == 0 {
+                    return Err("--zeros must be >= 1".to_string());
+                }
+                cli.zeros = Some(n);
             }
             "--digits" => {
                 i += 1;
@@ -362,6 +396,27 @@ fn run() -> Result<(), String> {
             }
             None => println!("T={t_max} is below the first Gram interval; nothing to verify."),
         }
+        return Ok(());
+    }
+
+    // Explicit-formula mode: reconstruct the prime-power count psi(x) from the zeros.
+    if let Some(x) = cli.primes {
+        let n = cli.zeros.unwrap_or(200);
+        // Collect at least n positive zeros: the nth lies near estimate_t(n).
+        let height = estimate_t(n as f64).max(20.0) * 1.05 + 10.0;
+        let mut gammas = zeros_below(height, cli.precision);
+        gammas.truncate(n);
+        let used = gammas.len();
+
+        let approx = psi_from_zeros(x, &gammas);
+        let actual = chebyshev_psi(x);
+        println!("Reconstructing psi(x) = sum over prime powers p^k <= x of ln(p)");
+        println!("  x:                        {x}");
+        println!("  zeros used:               {used}");
+        println!("  psi(x) from the zeros:    {approx:.6}");
+        println!("  psi(x) actual (sieve):    {actual:.6}");
+        println!("  error:                    {:.6}", approx - actual);
+        println!("  (PNT smooth estimate x:   {x:.6})");
         return Ok(());
     }
 

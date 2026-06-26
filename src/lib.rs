@@ -328,6 +328,71 @@ pub fn expected_zero_count(t: f64) -> f64 {
     theta(t) / PI + 1.0
 }
 
+/// The Chebyshev function `psi(x) = sum_{p^k <= x} ln(p)`, computed directly by sieving.
+///
+/// This is the "true" prime-power count that the explicit formula reconstructs from the
+/// zeros; the prime number theorem says `psi(x) ~ x`. Intended for moderate `x`, as it
+/// sieves all primes up to `x`.
+pub fn chebyshev_psi(x: f64) -> f64 {
+    if !x.is_finite() || x < 2.0 {
+        return 0.0;
+    }
+    let n = x.floor() as usize;
+    let mut is_composite = vec![false; n + 1];
+    let mut sum = 0.0;
+    for p in 2..=n {
+        if is_composite[p] {
+            continue;
+        }
+        // p is prime: add ln(p) once for every prime power p^k <= x.
+        let ln_p = (p as f64).ln();
+        let mut power = p as u64;
+        while power <= n as u64 {
+            sum += ln_p;
+            match power.checked_mul(p as u64) {
+                Some(next) => power = next,
+                None => break,
+            }
+        }
+        let mut m = p * p;
+        while m <= n {
+            is_composite[m] = true;
+            m += p;
+        }
+    }
+    sum
+}
+
+/// Approximates the Chebyshev function `psi(x)` from the nontrivial zeros via Riemann's
+/// explicit (von Mangoldt) formula — reconstructing the primes *from the zeros*.
+///
+/// With `rho = 1/2 + i*gamma` paired with its conjugate, the formula is
+///
+/// `psi(x) = x - sum_{gamma>0} (cos(g) + 2*gamma*sin(g)) * sqrt(x) / (1/4 + gamma^2)`
+/// `          - ln(2*pi) - (1/2) ln(1 - x^-2)`,  where `g = gamma * ln(x)`.
+///
+/// `gammas` are the positive imaginary parts of the zeros (e.g. from [`zeros_below`]); more
+/// zeros sharpen the reconstruction of the prime-power staircase. The series converges
+/// slowly and oscillates (Gibbs-like) near prime powers, so a finite sum is an
+/// approximation, sharpest away from the jumps.
+///
+/// Returns `NaN` for `x <= 1`.
+pub fn psi_from_zeros(x: f64, gammas: &[f64]) -> f64 {
+    if !x.is_finite() || x <= 1.0 {
+        return f64::NAN;
+    }
+    let ln_x = x.ln();
+    let sqrt_x = x.sqrt();
+    let oscillation: f64 = gammas
+        .iter()
+        .map(|&g| {
+            let arg = g * ln_x;
+            (arg.cos() + 2.0 * g * arg.sin()) / (0.25 + g * g)
+        })
+        .sum();
+    x - sqrt_x * oscillation - (2.0 * PI).ln() - 0.5 * (1.0 - x.powi(-2)).ln()
+}
+
 /// The `n`th Gram point: the solution of `theta(g) = n * pi`.
 ///
 /// Gram points are defined and strictly increasing for `n >= -1` (where `theta` is past
@@ -979,5 +1044,54 @@ mod tests {
     #[test]
     fn gram_count_rejects_tiny_range() {
         assert!(count_zeros_gram(5.0, Precision::Base).is_none());
+    }
+
+    #[test]
+    fn chebyshev_psi_matches_closed_form() {
+        assert_eq!(chebyshev_psi(1.0), 0.0);
+        assert!((chebyshev_psi(2.0) - 2f64.ln()).abs() < 1e-12);
+        // psi(10) sums ln p over prime powers <= 10: 2,4,8 (3*ln2), 3,9 (2*ln3), 5, 7.
+        let want = 3.0 * 2f64.ln() + 2.0 * 3f64.ln() + 5f64.ln() + 7f64.ln();
+        assert!((chebyshev_psi(10.0) - want).abs() < 1e-12);
+    }
+
+    #[test]
+    fn explicit_formula_reconstructs_psi_from_zeros() {
+        // Collect the first ~300 positive zeros and rebuild psi(x) from them. Away from
+        // prime-power jumps the truncated series is accurate to well under 1.
+        let height = estimate_t(300.0) * 1.05 + 10.0;
+        let mut gammas = zeros_below(height, Precision::Order2);
+        gammas.truncate(300);
+        assert!(
+            gammas.len() >= 300,
+            "needed 300 zeros, got {}",
+            gammas.len()
+        );
+
+        for &x in &[20.5, 30.5, 50.5] {
+            let approx = psi_from_zeros(x, &gammas);
+            let actual = chebyshev_psi(x);
+            assert!(
+                (approx - actual).abs() < 0.5,
+                "psi({x}): zeros gave {approx}, actual {actual}"
+            );
+        }
+        assert!(psi_from_zeros(1.0, &gammas).is_nan());
+    }
+
+    #[test]
+    fn explicit_formula_sharpens_with_more_zeros() {
+        // At a fixed flat point, more zeros reduce the reconstruction error on average.
+        let height = estimate_t(400.0) * 1.05 + 10.0;
+        let all = zeros_below(height, Precision::Order2);
+        let x = 50.5;
+        let actual = chebyshev_psi(x);
+        let err = |n: usize| (psi_from_zeros(x, &all[..n.min(all.len())]) - actual).abs();
+        assert!(
+            err(300) < err(20),
+            "more zeros should help: {} vs {}",
+            err(300),
+            err(20)
+        );
     }
 }

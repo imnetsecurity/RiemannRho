@@ -70,6 +70,9 @@ Execute with arguments or via interactive mode.
 - `--gram N`: Print the first $N$ Gram points and check Gram's law at each.
 - `--turing T`: Verify the zero count up to $T$ via Gram blocks and Rosser's rule (see
   [Gram Points & Turing's Method](#gram-points--turings-method)).
+- `--primes X` (with optional `--zeros N`): Reconstruct the prime-power count $\psi(X)$
+  from the zeros via Riemann's explicit formula (see
+  [Primes from the Zeros](#primes-from-the-zeros)).
 - `--digits D`: Locate the zero in arbitrary precision with $D$ decimal digits (requires
   the optional `bigfloat` feature; most useful at large $t$ — see [Arbitrary Precision](#arbitrary-precision)).
 - `--out FILE`: Output path for the generated plot (default: `zeta_plot.html`).
@@ -131,6 +134,12 @@ Upon completion, the tool prints the zero approximation and asks: "Do you want a
    ```
    Prints the first 10 Gram points $g_n$ and confirms $(-1)^n Z(g_n) > 0$ at each.
 
+7. **Reconstruct primes from the zeros**:
+   ```
+   ./target/release/riemannrho --primes 20.5 --high-order
+   ```
+   Rebuilds $\psi(20.5)$ from the first 200 zeros and compares with the sieved value.
+
 ## Arbitrary Precision
 
 By default RiemannRho is fully dependency-free and uses 64-bit floating point. At large
@@ -186,6 +195,36 @@ Gram-block zero count over (g_-1, g_136] = (9.6669, 298.8423]:
 This is the *method*, not a certified proof: rigorous bounds would need interval
 arithmetic, and Rosser's rule itself has (much higher) exceptions this does not
 special-case.
+
+## Primes from the Zeros
+
+The deepest reason the zeros matter: they *encode the primes*. Riemann's explicit (von
+Mangoldt) formula expresses the prime-power counting function
+$\psi(x) = \sum_{p^k \le x} \ln p$ as a smooth main term minus an oscillating sum over the
+nontrivial zeros $\rho = \tfrac12 + i\gamma$:
+
+$$\psi(x) = x - \sqrt{x}\sum_{\gamma>0}\frac{\cos(\gamma\ln x) + 2\gamma\sin(\gamma\ln x)}{\tfrac14+\gamma^2} - \ln(2\pi) - \tfrac12\ln(1 - x^{-2}).$$
+
+`--primes X` evaluates this using the first $N$ zeros (default 200, set with `--zeros N`)
+and compares it with the true $\psi(x)$ computed by sieving — so you watch the prime-power
+staircase emerge from the waves of the zeros.
+
+```
+./target/release/riemannrho --primes 20.5 --high-order
+```
+```
+Reconstructing psi(x) = sum over prime powers p^k <= x of ln(p)
+  x:                        20.5
+  zeros used:               200
+  psi(x) from the zeros:    19.256257
+  psi(x) actual (sieve):    19.265658
+  error:                    -0.009401
+  (PNT smooth estimate x:   20.500000)
+```
+
+The truncated series converges slowly and oscillates (Gibbs-like) near prime powers, so at
+any single $x$ more zeros do not always help — but on average the reconstruction sharpens
+as $N$ grows, most cleanly away from the jumps.
 
 ## Counting and Verification
 
