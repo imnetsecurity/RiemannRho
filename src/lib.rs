@@ -140,47 +140,112 @@ pub fn z_func(t: f64, precision: Precision) -> f64 {
     if !t.is_finite() || t <= 0.0 {
         return f64::NAN;
     }
-
-    let sqrt_t_over_2pi = (t / (2.0 * PI)).sqrt();
-    let nu = sqrt_t_over_2pi.floor() as i64;
-    let p = sqrt_t_over_2pi - nu as f64;
-
-    // Main sum: 2 * sum_{k=1}^{nu} cos(theta(t) - t*ln(k)) / sqrt(k).
-    // theta(t) is constant across the sum, so it is computed once here rather than
-    // re-evaluated inside the loop.
+    let nu = (t / (2.0 * PI)).sqrt().floor() as i64;
     let theta_t = theta(t);
     let mut sum = 0.0;
     for k in 1..=nu.max(0) {
         let kf = k as f64;
         sum += (theta_t - t * kf.ln()).cos() / kf.sqrt();
     }
-    sum *= 2.0;
+    2.0 * sum + riemann_siegel_remainder(t, precision)
+}
 
-    // Remainder: (-1)^{nu-1} * a^{-1/4} * [C0 + C1*a^{-1/2} + C2*a^{-1} + ...].
+/// The Riemann-Siegel remainder `(-1)^{nu-1} a^{-1/4} [C0 + C1 a^{-1/2} + C2 a^{-1}]`,
+/// shared by [`z_func`] and the cached scan evaluator. Cheap relative to the main sum.
+fn riemann_siegel_remainder(t: f64, precision: Precision) -> f64 {
+    let sqrt_t_over_2pi = (t / (2.0 * PI)).sqrt();
+    let nu = sqrt_t_over_2pi.floor() as i64;
+    let p = sqrt_t_over_2pi - nu as f64;
     let sign = if nu % 2 == 0 { -1.0 } else { 1.0 };
     let a = t / (2.0 * PI);
-    let scale = a.powf(-0.25);
+    // a^{-1/2} and a^{-1/4} via sqrt/recip instead of three expensive `powf` calls.
+    let inv_sqrt_a = 1.0 / a.sqrt();
+    let scale = inv_sqrt_a.sqrt(); // a^{-1/4}
 
     let psi = move |pp: f64| (2.0 * PI * (pp * pp - pp - 1.0 / 16.0)).cos() / (2.0 * PI * pp).cos();
 
-    let c0 = psi(p);
-    let mut r = sign * scale * c0;
-
+    let mut r = sign * scale * psi(p);
     let terms = precision.correction_terms();
-    if terms >= 1 {
+    if terms >= 2 {
+        // High-order path: psi'', psi''', psi'''''' all come from one shared 13-point grid
+        // p + j*0.025 (j = -6..=6), instead of evaluating psi independently per derivative.
+        // The stencils and Richardson combination match `nth_derivative` exactly.
+        let h = 0.05;
+        let h2 = 0.025;
+        let mut g = [0.0f64; 13];
+        for (idx, gv) in g.iter_mut().enumerate() {
+            *gv = psi(p + (idx as f64 - 6.0) * h2);
+        }
+        let gj = |j: i32| g[(j + 6) as usize];
+
+        let psi3 = {
+            let d_full = (-gj(-4) + 2.0 * gj(-2) - 2.0 * gj(2) + gj(4)) / (2.0 * h * h * h);
+            let d_half = (-gj(-2) + 2.0 * gj(-1) - 2.0 * gj(1) + gj(2)) / (2.0 * h2 * h2 * h2);
+            (4.0 * d_half - d_full) / 3.0
+        };
+        let psi2 = {
+            let d_full = (gj(-2) - 2.0 * gj(0) + gj(2)) / (h * h);
+            let d_half = (gj(-1) - 2.0 * gj(0) + gj(1)) / (h2 * h2);
+            (4.0 * d_half - d_full) / 3.0
+        };
+        let psi6 = {
+            let d_full = (gj(-6) - 6.0 * gj(-4) + 15.0 * gj(-2) - 20.0 * gj(0) + 15.0 * gj(2)
+                - 6.0 * gj(4)
+                + gj(6))
+                / h.powi(6);
+            let d_half = (gj(-3) - 6.0 * gj(-2) + 15.0 * gj(-1) - 20.0 * gj(0) + 15.0 * gj(1)
+                - 6.0 * gj(2)
+                + gj(3))
+                / h2.powi(6);
+            (4.0 * d_half - d_full) / 3.0
+        };
+
+        let c1 = -1.0 / (96.0 * PI * PI) * psi3;
+        r += sign * scale * c1 * inv_sqrt_a; // * a^{-1/2}
+        let c2 = 1.0 / (18432.0 * PI.powi(4)) * psi6 + 1.0 / (64.0 * PI.powi(2)) * psi2;
+        r += sign * scale * c2 * (inv_sqrt_a * inv_sqrt_a); // * a^{-1}
+    } else if terms >= 1 {
         let psi3 = nth_derivative(psi, p, 3, 0.05);
         let c1 = -1.0 / (96.0 * PI * PI) * psi3;
-        r += sign * scale * c1 * a.powf(-0.5);
+        r += sign * scale * c1 * inv_sqrt_a;
     }
+    r
+}
 
-    if terms >= 2 {
-        let psi2 = nth_derivative(psi, p, 2, 0.05);
-        let psi6 = nth_derivative(psi, p, 6, 0.05);
-        let c2 = 1.0 / (18432.0 * PI.powi(4)) * psi6 + 1.0 / (64.0 * PI.powi(2)) * psi2;
-        r += sign * scale * c2 * a.powf(-1.0);
+/// Precomputed `ln(k)` and `1/sqrt(k)` for `k = 1..=nu_max`, so the main-sum loop avoids a
+/// logarithm and a square root per term. Built once per scan and reused across the millions
+/// of `Z` evaluations a sweep performs.
+struct MainSumTables {
+    ln_k: Vec<f64>,
+    inv_sqrt_k: Vec<f64>,
+}
+
+impl MainSumTables {
+    fn build(nu_max: usize) -> Self {
+        let mut ln_k = Vec::with_capacity(nu_max);
+        let mut inv_sqrt_k = Vec::with_capacity(nu_max);
+        for k in 1..=nu_max {
+            let kf = k as f64;
+            ln_k.push(kf.ln());
+            inv_sqrt_k.push(1.0 / kf.sqrt());
+        }
+        MainSumTables { ln_k, inv_sqrt_k }
     }
+}
 
-    sum + r
+/// `Z(t)` evaluated with a prebuilt [`MainSumTables`] covering `nu(t)`. Numerically
+/// identical to [`z_func`]; only faster.
+fn z_with_tables(t: f64, precision: Precision, tables: &MainSumTables) -> f64 {
+    if !t.is_finite() || t <= 0.0 {
+        return f64::NAN;
+    }
+    let nu = (t / (2.0 * PI)).sqrt().floor() as usize;
+    let theta_t = theta(t);
+    let mut sum = 0.0;
+    for k in 1..=nu {
+        sum += (theta_t - t * tables.ln_k[k - 1]).cos() * tables.inv_sqrt_k[k - 1];
+    }
+    2.0 * sum + riemann_siegel_remainder(t, precision)
 }
 
 /// Finds a zero of Z(t) in `[a, b]`.
@@ -213,6 +278,12 @@ pub fn z_func(t: f64, precision: Precision) -> f64 {
 /// assert!(find_zero(5.0, 6.0, 1e-10, Precision::Order2).is_none());
 /// ```
 pub fn find_zero(a: f64, b: f64, tol: f64, precision: Precision) -> Option<f64> {
+    find_zero_with(a, b, tol, |t| z_func(t, precision))
+}
+
+/// Bracketed safeguarded-secant root finder, generic over the `Z` evaluator so the scan can
+/// supply a faster table-backed one while [`find_zero`] uses [`z_func`].
+fn find_zero_with<F: Fn(f64) -> f64>(a: f64, b: f64, tol: f64, eval: F) -> Option<f64> {
     // Reject invalid input outright. Without this an NaN bound (e.g. from a bad nth
     // estimate) made an unguarded loop spin forever, because `(b - a) < tol` is never
     // true when `b - a` is NaN.
@@ -222,8 +293,8 @@ pub fn find_zero(a: f64, b: f64, tol: f64, precision: Precision) -> Option<f64> 
 
     let mut lo = a;
     let mut hi = b;
-    let mut f_lo = z_func(lo, precision);
-    let mut f_hi = z_func(hi, precision);
+    let mut f_lo = eval(lo);
+    let mut f_hi = eval(hi);
     if !f_lo.is_finite() || !f_hi.is_finite() || f_lo * f_hi > 0.0 {
         return None;
     }
@@ -248,7 +319,7 @@ pub fn find_zero(a: f64, b: f64, tol: f64, precision: Precision) -> Option<f64> 
             }
         };
 
-        let f_mid = z_func(mid, precision);
+        let f_mid = eval(mid);
         if f_mid == 0.0 {
             return Some(mid);
         }
@@ -680,16 +751,23 @@ fn scan_zeros<F: FnMut(f64) -> bool>(
     resolution: f64,
     mut on_zero: F,
 ) {
+    // Precompute ln(k) / 1/sqrt(k) once for the whole sweep. nu is monotonic in t, so the
+    // table sized for t_max covers every evaluation in (t_start, t_max].
+    let nu_max = (t_max / (2.0 * PI)).sqrt().floor() as usize + 1;
+    let tables = MainSumTables::build(nu_max);
+
     let mut t = t_start.max(1.0);
-    let mut z = z_func(t, precision);
+    let mut z = z_with_tables(t, precision, &tables);
     while t < t_max {
         let a = (t / (2.0 * PI)).max(1.0);
         let spacing = (2.0 * PI / a.ln().max(0.05)).max(0.05);
         let step = (spacing / resolution).min(t_max - t);
         let t_next = t + step;
-        let z_next = z_func(t_next, precision);
+        let z_next = z_with_tables(t_next, precision, &tables);
         if z.is_finite() && z_next.is_finite() && z != 0.0 && z * z_next < 0.0 {
-            if let Some(root) = find_zero(t, t_next, 1e-9, precision) {
+            if let Some(root) =
+                find_zero_with(t, t_next, 1e-9, |x| z_with_tables(x, precision, &tables))
+            {
                 if root <= t_max && !on_zero(root) {
                     return;
                 }
