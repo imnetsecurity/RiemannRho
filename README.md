@@ -386,6 +386,26 @@ The zeros land squarely on GUE, with $\Sigma^2(L)$ far below the Poisson value $
 level rigidity that distinguishes a correlated spectrum from random noise. Point it at your
 own eigenvalues with `--rmt myspectrum.txt`.
 
+## Performance & Scale
+
+Finding/counting zeros up to height $T$ costs $O(T^{1.5})$: each $Z(t)$ evaluation is an
+$O(\sqrt{t})$ main sum, and a sweep needs $O(T)$ of them. The hot path is tuned hard:
+
+- the sweep and the root-finder refinement share **precomputed $\ln k$ and $1/\sqrt{k}$
+  tables**, so each main-sum term costs one cosine instead of a cosine plus a log and a
+  square root;
+- the high-order remainder evaluates $\psi$ on **one shared 13-point grid** for all three
+  derivatives, and replaces every `powf` with `sqrt`/reciprocal;
+- the sweep is **parallelized** across CPU cores.
+
+Together these roughly **halve** the wall-clock of a scan (e.g. counting the 63,519 zeros
+below $T = 50{,}000$ dropped from ~4.9 s to ~2.5 s on one machine).
+
+This is a fast *exploratory* tool, not a record-breaker: world-record computations
+(Gourdon's $10^{13}$ zeros, Platt, Odlyzko at height $10^{22}$) use the **Odlyzko–Schönhage**
+algorithm, which evaluates $Z$ at many points at once via FFT to bring the per-point cost
+down to $O(t^{\epsilon})$ — a different algorithm class, and out of scope here.
+
 ## Counting and Verification
 
 `--count T` locates every zero of $Z(t)$ on the critical line with $0 < t \le T$ and
